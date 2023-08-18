@@ -1,5 +1,6 @@
 ﻿using System;
 using Utils;
+using RemeSnes.Hardware.Audio;
 
 namespace RemeSnes.Hardware
 {
