@@ -3,25 +3,36 @@ using Utils;
 
 namespace RemeSnes.Hardware
 {
+    /// <summary>
+    /// Represents the main A bus, B bus, and data bus, handling routing based on the requested address.
+    /// </summary>
     internal class Bus
     {
         private Wram _wram;
         private Rom _rom;
         private Sram _sram;
         private Ppu _ppu;
+        private Apu _apu;
+
+        // https://en.wikibooks.org/wiki/Super_NES_Programming/SNES_Hardware_Registers
 
         // Hardware Registers
-        private byte[] HardwareRegistersLow = new byte[0x84];
+        // TODO maybe move hardware registers to their respective locations, and just route to them from here.
+        internal byte[] HardwareRegistersLow = new byte[0x84];
         private byte[] HardwareRegistersHigh = new byte[0x20];
         private byte[] DmaRegisters = new byte[0x80];
-        // TODO handle joypad enable
 
-        public Bus(Wram wram, Sram sram, Rom rom, Ppu ppu)
+        // Hardware register convenience properties
+        private bool JoypadEnable { get { return (HardwareRegistersHigh[(int)HardwareRegisterHighOffset.NmiVHCountJoypadEnable] & 1) != 0; } }
+        // TODO clear joypad data on joypad disable?
+
+        public Bus(Wram wram, Sram sram, Rom rom, Ppu ppu, Apu apu)
         {
             _wram = wram;
             _rom = rom;
             _sram = sram;
-            _ppu = ppu; 
+            _ppu = ppu;
+            _apu = apu;
         }
 
         /// <summary>
@@ -33,7 +44,8 @@ namespace RemeSnes.Hardware
         /// </param>
         public void SetJoypadData(int joypadIndex, ushort buttons)
         {
-            HardwareRegistersHigh.WriteShort((int)HardwareRegisterHighOffset.Joypad1Low + joypadIndex * 2, buttons);
+            if (JoypadEnable)
+                HardwareRegistersHigh.WriteShort((int)HardwareRegisterHighOffset.Joypad1Low + joypadIndex * 2, buttons);
         }
 
         private byte[] GetMemory(byte bank, ushort address, out int index)
@@ -102,6 +114,7 @@ namespace RemeSnes.Hardware
                 }
                 else
                 {
+                    // TODO LoRom vs HiRom logic could be handled elsewhere like a Cartridge class or in the Rom class
                     if (_rom.MapType == RomMapType.LoRom)
                     {
                         index = address - (bank % 2 == 0 ? 0x8000 : 0) + ((bank / 2) << 16);
@@ -209,6 +222,7 @@ namespace RemeSnes.Hardware
         // Called after the write occurs.
         private void HandleHardwareRegisterWrite(byte bank, ushort address)
         {
+            // TODO hardware registers may need to be handled sequentially rather than with WriteShort
             if (bank < 0x40 || (bank >= 0x80 && bank < 0xc0))
             {
                 if (address >= 0x2100 && address < 0x2200)
@@ -265,7 +279,7 @@ namespace RemeSnes.Hardware
                         // Increment address if setting set
                         // TODO make sure the order of operations here is correct
                         if ((HardwareRegistersLow[(int)HardwareRegisterLowOffset.VRAMAddressIncrement] & 0x80) == 0)
-                            HardwareRegistersLow.WriteShort((int)HardwareRegisterLowOffset.VRAMAddress, (ushort)(vramAddress + 1));
+                            AutoIncrementVramAddress();
                     }
                     else if (offset == HardwareRegisterLowOffset.VRAMDataWriteHigh)
                     {
@@ -274,7 +288,7 @@ namespace RemeSnes.Hardware
                         // Increment address if setting set
                         // TODO make sure the order of operations here is correct
                         if ((HardwareRegistersLow[(int)HardwareRegisterLowOffset.VRAMAddressIncrement] & 0x80) != 0)
-                            HardwareRegistersLow.WriteShort((int)HardwareRegisterLowOffset.VRAMAddress, (ushort)(vramAddress + 1));
+                            AutoIncrementVramAddress();
                     }
                 }
                 if (address >= 0x4200 && address < 0x4500)
@@ -327,6 +341,22 @@ namespace RemeSnes.Hardware
             }
         }
 
+        private void AutoIncrementVramAddress()
+        {
+            var vramAddress = HardwareRegistersLow.ReadShort((int)HardwareRegisterLowOffset.VRAMAddress);
+            var incrementSizeSelector = HardwareRegistersLow[(int)HardwareRegisterLowOffset.VRAMAddressIncrement] & 0b11;
+            if (incrementSizeSelector == 0)
+                vramAddress += 1;
+            else if (incrementSizeSelector == 1)
+                vramAddress += 32;
+            else if (incrementSizeSelector == 2)
+                vramAddress += 64;
+            else if (incrementSizeSelector == 3)
+                vramAddress += 128;
+            HardwareRegistersLow.WriteShort((int)HardwareRegisterLowOffset.VRAMAddress, vramAddress);
+        }
+
+        // https://en.wikibooks.org/wiki/Super_NES_Programming/DMA_tutorial
         private void DoDMA(int channel)
         {
             // TODO
@@ -353,6 +383,18 @@ namespace RemeSnes.Hardware
                     else if (offset == HardwareRegisterLowOffset.OAMDataRead)
                     {
                         HardwareRegistersLow[(int)HardwareRegisterLowOffset.OAMDataRead] = _ppu.OAM[++OAMAccessAddress];
+                    }
+                    else if (offset == HardwareRegisterLowOffset.VRAMDataReadLow)
+                    {
+                        // TODO order of operations
+                        if ((HardwareRegistersLow[(int)HardwareRegisterLowOffset.VRAMAddressIncrement] & 0x80) == 0)
+                            AutoIncrementVramAddress();
+                    }
+                    else if (offset == HardwareRegisterLowOffset.VRAMDataReadHigh)
+                    {
+                        // TODO order of operations
+                        if ((HardwareRegistersLow[(int)HardwareRegisterLowOffset.VRAMAddressIncrement] & 0x80) != 0)
+                            AutoIncrementVramAddress();
                     }
                 }
                 if (address >= 0x4200 && address < 0x4500)

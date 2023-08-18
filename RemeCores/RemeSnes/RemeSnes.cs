@@ -10,6 +10,7 @@ namespace RemeSnes
         private Wram Wram;
         private Rom Rom;
         private Sram Sram;
+        private Apu Apu;
 
         public RemeSnes()
         {
@@ -17,7 +18,9 @@ namespace RemeSnes
             Ppu = new Ppu();
             Sram = new Sram();
             Rom = new Rom();
-            Bus = new Bus(Wram, Sram, Rom, Ppu);
+            Apu = new Apu();
+            Bus = new Bus(Wram, Sram, Rom, Ppu, Apu);
+            Ppu.SetBus(Bus);
             Cpu = new Cpu(Bus, Rom);
         }
 
