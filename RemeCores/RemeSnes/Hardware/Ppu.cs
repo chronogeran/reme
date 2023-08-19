@@ -23,14 +23,44 @@
             _bus = bus;
         }
 
-        private int GetBGTilemapAddress(int planeIndex)
+        public void WriteVram(ushort address, byte b)
         {
-            return (_bus.HardwareRegistersLow[(int)HardwareRegisterLowOffset.BG1AddressAndSize + planeIndex] & 0b11111100) << 9;
+            Vram[address] = b;
         }
-        private int GetBGTilemapSize(int planeIndex)
+
+        public byte ReadVram(ushort address)
         {
-            return _bus.HardwareRegistersLow[(int)HardwareRegisterLowOffset.BG1AddressAndSize + planeIndex] & 0b11;
+            return Vram[address];
         }
+
+        public void WriteCGRam(ushort address, byte b)
+        {
+            CGRam[address] = b;
+        }
+
+        public byte ReadCGRam(ushort address)
+        {
+            return CGRam[address];
+        }
+
+        public void WriteOAM(ushort address, byte b)
+        {
+            OAM[address] = b;
+        }
+
+        public byte ReadOAM(ushort address)
+        {
+            return OAM[address];
+        }
+
+        //private int GetBGTilemapAddress(int planeIndex)
+        //{
+        //    return (_bus.HardwareRegistersLow[(int)HardwareRegisterLowOffset.BG1AddressAndSize + planeIndex] & 0b11111100) << 9;
+        //}
+        //private int GetBGTilemapSize(int planeIndex)
+        //{
+        //    return _bus.HardwareRegistersLow[(int)HardwareRegisterLowOffset.BG1AddressAndSize + planeIndex] & 0b11;
+        //}
 
         public void RenderFrame()
         {
@@ -63,6 +93,10 @@
                     // 3D!
                     break;
             }
+
+            // Do Sprites
+
+            _bus.SendVBlank();
         }
 
         // Tilemap

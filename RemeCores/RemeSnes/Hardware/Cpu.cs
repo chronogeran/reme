@@ -15,6 +15,7 @@
 
         public const byte DIRECT_PAGE_BANK = 0x7e;
 
+        // Status flags
         public bool Carry { get { return (ProcessorStatus & 1) != 0; } set { if (value) ProcessorStatus |= 1; else ProcessorStatus &= 0xfe; } }
         public bool Zero { get { return (ProcessorStatus & 2) != 0; } set { if (value) ProcessorStatus |= 2; else ProcessorStatus &= 0xfd; } }
         public bool IRQDisable { get { return (ProcessorStatus & 4) != 0; } set { if (value) ProcessorStatus |= 4; else ProcessorStatus &= 0xfb; } }
@@ -29,10 +30,16 @@
         private Bus _bus;
         private Rom _rom;
 
-        public Cpu(Bus bus, Rom rom)
+        public bool WaitingForVBlank { get; private set; }
+
+        public Cpu(Rom rom)
+        {
+            _rom = rom;
+        }
+
+        public void SetBus(Bus bus)
         {
             _bus = bus;
-            _rom = rom;
         }
 
         public void RunOneInstruction()
@@ -69,7 +76,7 @@
                     throw new Exception("Processor stopped");
                     break;
                 case 0xcb: // WAI
-                    // TODO
+                    WaitingForVBlank = true;
                     break;
                 case 0x42: // WDM
                     throw new Exception("WDM encountered");
@@ -1720,6 +1727,11 @@
             ProgramBank = 0;
             EmulationBit = true;
             ProgramCounter = resetVector;
+        }
+
+        public void TriggerVBlank()
+        {
+            // TODO
         }
 
         private enum OperationType

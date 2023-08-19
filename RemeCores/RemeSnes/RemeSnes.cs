@@ -5,13 +5,13 @@ namespace RemeSnes
 {
     public class RemeSnes
     {
-        private Cpu Cpu;
-        private Bus Bus;
-        private Ppu Ppu;
-        private Wram Wram;
-        private Rom Rom;
-        private Sram Sram;
-        private Apu Apu;
+        private readonly Cpu Cpu;
+        private readonly Bus Bus;
+        private readonly Ppu Ppu;
+        private readonly Wram Wram;
+        private readonly Rom Rom;
+        private readonly Sram Sram;
+        private readonly Apu Apu;
 
         public RemeSnes()
         {
@@ -20,9 +20,10 @@ namespace RemeSnes
             Sram = new Sram();
             Rom = new Rom();
             Apu = new Apu();
-            Bus = new Bus(Wram, Sram, Rom, Ppu, Apu);
+            Cpu = new Cpu(Rom);
+            Bus = new Bus(Wram, Sram, Rom, Ppu, Apu, Cpu);
             Ppu.SetBus(Bus);
-            Cpu = new Cpu(Bus, Rom);
+            Cpu.SetBus(Bus);
         }
 
         public void LoadRom(byte[] romFile)
@@ -51,6 +52,18 @@ namespace RemeSnes
         public Span<byte> GetFrameBuffer()
         {
             return Ppu.RenderedFrameData;
+        }
+
+        //public Span<byte> GetAudioBuffer()
+        //{
+        //}
+        public int GetValidAudioSampleLength()
+        {
+            return 0;
+        }
+        public int GetValidAudioSampleIndex()
+        {
+            return 0;
         }
 
         public void RunOneInstruction()

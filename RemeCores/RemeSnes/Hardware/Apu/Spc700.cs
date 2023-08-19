@@ -6,6 +6,50 @@ namespace RemeSnes.Hardware.Audio
     {
         public byte[] Psram = new byte[0x10000]; // Holds code and data for the SPC700
 
+        private Dsp _dsp;
+
+        private static readonly byte[] IPL_ROM = new byte[]
+        {
+            0xCD, 0xEF, 0xBD, 0xE8, 0x00, 0xC6, 0x1D, 0xD0, 0xFC, 0x8F, 0xAA, 0xF4, 0x8F, 0xBB, 0xF5, 0x78,
+            0xCC, 0xF4, 0xD0, 0xFB, 0x2F, 0x19, 0xEB, 0xF4, 0xD0, 0xFC, 0x7E, 0xF4, 0xD0, 0x0B, 0xE4, 0xF5,
+            0xCB, 0xF4, 0xD7, 0x00, 0xFC, 0xD0, 0xF3, 0xAB, 0x01, 0x10, 0xEF, 0x7E, 0xF4, 0x10, 0xEB, 0xBA,
+            0xF6, 0xDA, 0x00, 0xBA, 0xF4, 0xC4, 0xF4, 0xDD, 0x5D, 0xD0, 0xDB, 0x1F, 0x00, 0x00, 0xC0, 0xFF,
+        };
+
+        public void SetDsp(Dsp dsp) { _dsp = dsp; }
+
+        // TODO decide how to handle real time vs. emulated time.
+        // execute each clock cycle or just some of them?
+        private Thread CpuThread;
+        private Timer CpuTimer;
+        private System.Timers.Timer CpuTimer2;
+        // System.Threading.Timers won't work because they only accept integer milliseconds.
+        // System.Timers.Timer might work because it accepts a double, but I think dedicated threads may be better.
+
+        public void Reset()
+        {
+            if (CpuThread != null)
+            {
+                CpuThread.Join();
+            }
+
+            Array.Clear(Psram);
+            _iplRegionReadable = true;
+            Accumulator = 0;
+            X = 0;
+            Y = 0;
+            ProgramStatus = 0;
+            ProgramCounter = 0xffc0;
+
+            CpuThread = new Thread(ThreadLoop);
+            CpuThread.Start();
+        }
+
+        private void ThreadLoop(object? state)
+        {
+
+        }
+
         // https://wiki.superfamicom.org/spc700-reference
         // https://en.wikibooks.org/wiki/Super_NES_Programming/SPC700_reference
         // https://emudev.de/q00-snes/spc700-the-audio-processor/
@@ -32,12 +76,32 @@ namespace RemeSnes.Hardware.Audio
         private ushort YOffset { get { return DirectPageOffset(Y); } }
 
         // Hardware Registers
-        private byte Timer0 { set { } }
-        private byte Timer1 { set { } }
-        private byte Timer2 { set { } }
-        private byte Counter0 { get { return 0; } }
-        private byte Counter1 { get { return 0; } }
-        private byte Counter2 { get { return 0; } }
+
+        // Timers
+        // Setting TimerX sets the due time of the timer (8 bits)
+        // Internal timer tick is only incremented when timer is enabled
+        // CounterX increments every time the timer hits its due time (4 bits)
+        // CounterX resets to zero on read
+        // Internal timer is reset on each Counter increment
+        // The timer should be stopped before setting the Timer registers (you can do it while running, but it will not catch an earlier setting)
+        private byte Timer0 { set { _timer0 = value; } } // 8KHz (128 clock cycles @1.024 MHz)
+        private byte Timer1 { set { _timer1 = value; } } // 8KHz
+        private byte Timer2 { set { _timer2 = value; } } // 64KHz (16 clock cycles @1.024 MHz)
+        private bool _timer0Active;
+        private bool _timer1Active;
+        private bool _timer2Active;
+        // Internal timer values
+        private byte _timer0;
+        private byte _timer1;
+        private byte _timer2;
+        // Internal counter values
+        private byte _counter0;
+        private byte _counter1;
+        private byte _counter2;
+        // Counter read by CPU (reset on read)
+        private byte Counter0 { get { var ret = _counter0; _counter0 = 0; return ret; } }
+        private byte Counter1 { get { var ret = _counter1; _counter1 = 0; return ret; } }
+        private byte Counter2 { get { var ret = _counter2; _counter2 = 0; return ret; } }
 
         // External entry points for I/O ports
         public byte Port0 { get { return Port0Out; } set { Port0In = value; } }
@@ -53,11 +117,11 @@ namespace RemeSnes.Hardware.Audio
         private byte Port2In;
         private byte Port3Out;
         private byte Port3In;
+
+        private byte DspAddress;
         private byte RegisterF8;
         private byte RegisterF9;
-        private bool Timer0Active;
-        private bool Timer1Active;
-        private bool Timer2Active;
+        private bool _iplRegionReadable;
 
         /// <summary>
         /// Reads one byte from ProgramCounter, increments ProgramCounter.
@@ -141,19 +205,20 @@ namespace RemeSnes.Hardware.Audio
         private byte ReadByte(ushort address)
         {
             if (address < 0xf0 || address > 0xff)
-                return Psram[address];
+            {
+                if (address >= 0xffc0 && _iplRegionReadable)
+                    return IPL_ROM[address - 0xffc0];
+                else
+                    return Psram[address];
+            }
             else
             {
                 switch (address)
                 {
                     case 0xf2:
-                        // TODO
-                        throw new NotImplementedException();
-                        break;
+                        return DspAddress;
                     case 0xf3:
-                        // TODO
-                        throw new NotImplementedException();
-                        break;
+                        return _dsp.Read(DspAddress);
                     case 0xf4:
                         return Port0In;
                     case 0xf5:
@@ -166,6 +231,10 @@ namespace RemeSnes.Hardware.Audio
                         return RegisterF8;
                     case 0xf9:
                         return RegisterF9;
+                    case 0xfa:
+                    case 0xfb:
+                    case 0xfc:
+                        return 0;
                     case 0xfd:
                         return Counter0;
                     case 0xfe:
@@ -200,10 +269,10 @@ namespace RemeSnes.Hardware.Audio
                         HandleControlWrite(b);
                         break;
                     case 0xf2:
-                        // TODO
+                        DspAddress = b;
                         break;
                     case 0xf3:
-                        // TODO
+                        _dsp.Write(DspAddress, b);
                         break;
                     case 0xf4:
                         Port0Out = b;
@@ -1486,9 +1555,10 @@ namespace RemeSnes.Hardware.Audio
 
         private void HandleControlWrite(byte b)
         {
-            Timer0Active = (b & 0x1) != 0;
-            Timer1Active = (b & 0x2) != 0;
-            Timer2Active = (b & 0x4) != 0;
+            // TODO handle timers
+            _timer0Active = (b & 0x1) != 0;
+            _timer1Active = (b & 0x2) != 0;
+            _timer2Active = (b & 0x4) != 0;
             if ((b & 0x10) != 0)
             {
                 Port0In = 0;
@@ -1499,6 +1569,7 @@ namespace RemeSnes.Hardware.Audio
                 Port2In = 0;
                 Port3In = 0;
             }
+            _iplRegionReadable = (b & 0x80) != 0;
         }
 
         private enum AddressingType
