@@ -1,5 +1,6 @@
 ﻿using Utils;
 using RemeSnes.Hardware.Audio;
+using System.Windows.Markup;
 
 namespace RemeSnes.Hardware
 {
@@ -60,7 +61,9 @@ namespace RemeSnes.Hardware
         #region Signals
         public void SendVBlank()
         {
-            _cpu.TriggerVBlank();
+            NmiFlagAndCpuVersionNumber |= 0x80;
+            if (NmiEnable)
+                _cpu.TriggerVBlank();
         }
         #endregion
 
@@ -69,6 +72,7 @@ namespace RemeSnes.Hardware
         private ushort VramAddress;
         private byte VRAMAddressIncrement;
         private byte NmiVHCountJoypadEnable;
+        private byte NmiFlagAndCpuVersionNumber;
 
         private byte SignedMultiplyLow;
         private byte SignedMultiplyHigh;
@@ -92,6 +96,7 @@ namespace RemeSnes.Hardware
 
         // Hardware register convenience properties
         private bool JoypadEnable { get { return (NmiVHCountJoypadEnable & 1) != 0; } }
+        public bool NmiEnable { get { return (NmiVHCountJoypadEnable & 0x80) != 0; } }
         // TODO clear joypad data on joypad disable?
 
         private byte ReadHardwareRegister(ushort address)
@@ -138,7 +143,40 @@ namespace RemeSnes.Hardware
 
                 switch (offset)
                 {
-
+                    case HardwareRegisterHighOffset.NmiVHCountJoypadEnable:
+                        return NmiVHCountJoypadEnable;
+                    case HardwareRegisterHighOffset.NmiFlagAndCpuVersionNumber:
+                        {
+                            var b = NmiFlagAndCpuVersionNumber;
+                            // Clear NMI flag on read
+                            NmiFlagAndCpuVersionNumber &= 0x7f;
+                            return b;
+                        }
+                    case HardwareRegisterHighOffset.HVBlankFlagsAndJoypadStatus:
+                        {
+                            byte b = 0;
+                            if (_ppu.InVBlank())
+                                b |= 0x80;
+                            // TODO H-Blank
+                            // TODO Auto-Joypad Read status
+                            return b;
+                        }
+                    case HardwareRegisterHighOffset.Joypad1Low:
+                        return (byte)Joypad1;
+                    case HardwareRegisterHighOffset.Joypad1High:
+                        return Joypad1.GetHighByte();
+                    case HardwareRegisterHighOffset.Joypad2Low:
+                        return (byte)Joypad2;
+                    case HardwareRegisterHighOffset.Joypad2High:
+                        return Joypad2.GetHighByte();
+                    case HardwareRegisterHighOffset.Joypad3Low:
+                        return (byte)Joypad3;
+                    case HardwareRegisterHighOffset.Joypad3High:
+                        return Joypad3.GetHighByte();
+                    case HardwareRegisterHighOffset.Joypad4Low:
+                        return (byte)Joypad4;
+                    case HardwareRegisterHighOffset.Joypad4High:
+                        return Joypad4.GetHighByte();
                 }
             }
 
@@ -225,6 +263,13 @@ namespace RemeSnes.Hardware
             if (address >= 0x4200 && address < 0x4500)
             {
                 var offset = (HardwareRegisterHighOffset)(address - 0x4200);
+
+                switch (offset)
+                {
+                    case HardwareRegisterHighOffset.NmiVHCountJoypadEnable:
+                        NmiVHCountJoypadEnable = value;
+                        break;
+                }
 
                 // TODO delay results (there are likely situations in which the CPU uses the write for a next operation to cover the wait time for the previous operation)
                 // Multiplication

@@ -35,6 +35,8 @@
         public Cpu(Rom rom)
         {
             _rom = rom;
+            _cpuThread = new Thread(ThreadLoop) { Name = "CPU Thread" };
+            _cpuThread.Start();
         }
 
         public void SetBus(Bus bus)
@@ -42,7 +44,61 @@
             _bus = bus;
         }
 
-        public void RunOneInstruction()
+        public void EmulateFrame()
+        {
+            _emulateSignal.Set();
+        }
+
+        private Thread _cpuThread;
+        private ManualResetEvent _emulateSignal = new(false);
+        private ManualResetEvent _vblankSignal = new(false);
+        private bool _shuttingDown = false;
+        private void ThreadLoop()
+        {
+            while (!_shuttingDown)
+            {
+                _emulateSignal.WaitOne();
+                _emulateSignal.Reset();
+                // Begin frame
+
+                while (!WaitingForVBlank && !_vblankSignal.WaitOne(0))
+                {
+                    RunOneInstruction();
+                }
+
+                if (_bus.NmiEnable)
+                {
+                    _vblankSignal.WaitOne();
+                    _vblankSignal.Reset();
+                    // VBlank processing
+                    WaitingForVBlank = false;
+                    PushByte(ProgramBank);
+                    PushShort(ProgramCounter);
+                    ProgramBank = 0;
+                    ProgramCounter = _rom.NMIVector;
+                    RunNmiHandler();
+                }
+            }
+        }
+
+        private void RunNmiHandler()
+        {
+            while (RunOneInstruction() != 0x40) ;
+        }
+
+        public void Begin(ushort resetVector)
+        {
+            ProgramBank = 0;
+            EmulationBit = true;
+            ProgramCounter = resetVector;
+        }
+
+        public void TriggerVBlank()
+        {
+            _vblankSignal.Set();
+        }
+
+        public byte RunOneInstruction()
         {
             var opcode = _bus.ReadByte(ProgramBank, ProgramCounter);
             ProgramCounter++;
@@ -1125,6 +1181,11 @@
                     }
                     break;
 
+                case 0x40: // RTI
+                    // TODO verify
+                    ProgramCounter = PullShort();
+                    ProgramBank = PullByte();
+                    break;
                 case 0x6b: // RTL
                     ProgramCounter = PullShort();
                     ProgramCounter++;
@@ -1138,6 +1199,8 @@
                 default:
                     throw new Exception("Unhandled opcode " + opcode);
             }
+
+            return opcode;
         }
 
         private void DoTestResetBits(uint addr)
@@ -1720,18 +1783,6 @@
             // TODO rollover
             Stack += 2;
             return _bus.ReadShort(DIRECT_PAGE_BANK, (ushort)(Stack - 1));
-        }
-
-        public void Begin(ushort resetVector)
-        {
-            ProgramBank = 0;
-            EmulationBit = true;
-            ProgramCounter = resetVector;
-        }
-
-        public void TriggerVBlank()
-        {
-            // TODO
         }
 
         private enum OperationType

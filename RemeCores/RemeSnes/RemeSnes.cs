@@ -29,6 +29,8 @@ namespace RemeSnes
         public void LoadRom(byte[] romFile)
         {
             Rom.Initialize(romFile);
+            Apu.Reset();
+            Ppu.Reset();
             Cpu.Begin(Rom.ResetVector);
         }
 
@@ -66,14 +68,16 @@ namespace RemeSnes
             return 0;
         }
 
+        public void EmulateFrame()
+        {
+            Cpu.EmulateFrame();
+            Apu.EmulateFrame();
+            Ppu.EmulateFrame();
+        }
+
         public void RunOneInstruction()
         {
             Cpu.RunOneInstruction();
-        }
-
-        public void RunOneFrame()
-        {
-            // TODO
         }
     }
 }

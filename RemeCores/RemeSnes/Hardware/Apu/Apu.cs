@@ -14,6 +14,17 @@
             _spc700.SetDsp(_dsp);
         }
 
+        public void Reset()
+        {
+            _spc700.Reset();
+            //_dsp.Reset();
+        }
+
+        public void EmulateFrame()
+        {
+            _spc700.EmulateFrame();
+        }
+
         public byte Port0 { get { return _spc700.Port0; } set { _spc700.Port0 = value; } }
         public byte Port1 { get { return _spc700.Port1; } set { _spc700.Port1 = value; } }
         public byte Port2 { get { return _spc700.Port2; } set { _spc700.Port2 = value; } }

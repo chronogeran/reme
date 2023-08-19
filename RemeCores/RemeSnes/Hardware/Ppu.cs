@@ -18,9 +18,52 @@
 
         private Bus _bus;
 
-        public void SetBus(Bus bus)
+        public Ppu()
+        {
+            _cpuThread = new Thread(ThreadLoop) { Name = "PPU Thread" };
+            _cpuThread.Start();
+        }
+
+        internal void SetBus(Bus bus)
         {
             _bus = bus;
+        }
+
+        internal void Reset()
+        {
+        }
+
+        internal void EmulateFrame()
+        {
+            _emulateSignal.Set();
+        }
+
+        private Thread _cpuThread;
+        private ManualResetEvent _emulateSignal = new(false);
+        private bool _shuttingDown = false;
+        private void ThreadLoop()
+        {
+            while (!_shuttingDown)
+            {
+                _emulateSignal.WaitOne();
+                _emulateSignal.Reset();
+                _inVBlank = false;
+
+                RenderFrame();
+                // TODO timing
+                Thread.Sleep(13);
+
+                _inVBlank = true;
+                _bus.SendVBlank();
+                Thread.Sleep(2);
+            }
+            _inVBlank = false;
+        }
+
+        private volatile bool _inVBlank;
+        internal bool InVBlank()
+        {
+            return _inVBlank;
         }
 
         public void WriteVram(ushort address, byte b)
@@ -95,8 +138,6 @@
             }
 
             // Do Sprites
-
-            _bus.SendVBlank();
         }
 
         // Tilemap

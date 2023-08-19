@@ -1,4 +1,5 @@
-﻿using Utils;
+﻿using System.Diagnostics;
+using Utils;
 
 namespace RemeSnes.Hardware.Audio
 {
@@ -16,23 +17,25 @@ namespace RemeSnes.Hardware.Audio
             0xF6, 0xDA, 0x00, 0xBA, 0xF4, 0xC4, 0xF4, 0xDD, 0x5D, 0xD0, 0xDB, 0x1F, 0x00, 0x00, 0xC0, 0xFF,
         };
 
-        public void SetDsp(Dsp dsp) { _dsp = dsp; }
+        public Spc700()
+        {
+            _cpuThread = new Thread(ThreadLoop) { Name = "SPC-700 Thread" };
+            _cpuThread.Start();
+        }
 
-        // TODO decide how to handle real time vs. emulated time.
-        // execute each clock cycle or just some of them?
-        private Thread CpuThread;
-        private Timer CpuTimer;
-        private System.Timers.Timer CpuTimer2;
-        // System.Threading.Timers won't work because they only accept integer milliseconds.
-        // System.Timers.Timer might work because it accepts a double, but I think dedicated threads may be better.
+        public void SetDsp(Dsp dsp) { _dsp = dsp; }
 
         public void Reset()
         {
-            if (CpuThread != null)
+            if (_running)
             {
-                CpuThread.Join();
+                _shuttingDown = true;
+                _cpuThread.Join();
+                _running = false;
+                _shuttingDown = false;
+                _cpuThread = new Thread(ThreadLoop);
+                _cpuThread.Start();
             }
-
             Array.Clear(Psram);
             _iplRegionReadable = true;
             Accumulator = 0;
@@ -40,14 +43,38 @@ namespace RemeSnes.Hardware.Audio
             Y = 0;
             ProgramStatus = 0;
             ProgramCounter = 0xffc0;
-
-            CpuThread = new Thread(ThreadLoop);
-            CpuThread.Start();
         }
 
-        private void ThreadLoop(object? state)
+        internal void EmulateFrame()
         {
+            _emulateSignal.Set();
+        }
+        private Thread _cpuThread;
+        private ManualResetEvent _emulateSignal = new(false);
 
+        private volatile bool _shuttingDown = false;
+        private volatile bool _running = false;
+        private void ThreadLoop()
+        {
+            while (!_shuttingDown)
+            {
+                _emulateSignal.WaitOne();
+                _emulateSignal.Reset();
+                _running = true;
+                // Begin frame
+
+                // If we want to simulate at 60Hz, we should run about 17038 clock cycles
+                // per iteration. If each iteration through this loop is 16 cycles, that's 1065 iterations.
+                int iterations = 0;
+                while (iterations < 1065)
+                {
+                    iterations++;
+                    IncrementTimers();
+                    // for now a very rough 3 instructions per 16 cycles
+                    for (int i = 0; i < 3; i++)
+                        RunOneInstruction();
+                }
+            }
         }
 
         // https://wiki.superfamicom.org/spc700-reference
@@ -84,30 +111,74 @@ namespace RemeSnes.Hardware.Audio
         // CounterX resets to zero on read
         // Internal timer is reset on each Counter increment
         // The timer should be stopped before setting the Timer registers (you can do it while running, but it will not catch an earlier setting)
-        private byte Timer0 { set { _timer0 = value; } } // 8KHz (128 clock cycles @1.024 MHz)
-        private byte Timer1 { set { _timer1 = value; } } // 8KHz
-        private byte Timer2 { set { _timer2 = value; } } // 64KHz (16 clock cycles @1.024 MHz)
-        private bool _timer0Active;
-        private bool _timer1Active;
-        private bool _timer2Active;
-        // Internal timer values
-        private byte _timer0;
-        private byte _timer1;
-        private byte _timer2;
-        // Internal counter values
-        private byte _counter0;
-        private byte _counter1;
-        private byte _counter2;
-        // Counter read by CPU (reset on read)
-        private byte Counter0 { get { var ret = _counter0; _counter0 = 0; return ret; } }
-        private byte Counter1 { get { var ret = _counter1; _counter1 = 0; return ret; } }
-        private byte Counter2 { get { var ret = _counter2; _counter2 = 0; return ret; } }
+        //private byte Timer0 { set { _timer0 = value; } } // 8KHz (128 clock cycles @1.024 MHz)
+        //private byte Timer1 { set { _timer1 = value; } } // 8KHz
+        //private byte Timer2 { set { _timer2 = value; } } // 64KHz (16 clock cycles @1.024 MHz)
+        private struct Timer
+        {
+            private bool Enabled;
+            private byte InternalTick;
+            public byte Target;
+            private byte Counter; // Number of times Target has been reached
+
+            public void SetEnabled(bool enabled)
+            {
+                Enabled = enabled;
+                if (Enabled)
+                    Reset();
+            }
+
+            public void Reset()
+            {
+                InternalTick = 0;
+                Counter = 0;
+            }
+
+            public byte ReadCounter()
+            {
+                var c = Counter;
+                Counter = 0;
+                return c;
+            }
+
+            public void Tick()
+            {
+                if (Enabled)
+                {
+                    InternalTick++;
+                    if (InternalTick == Target)
+                    {
+                        Counter++;
+                        if (Counter > 0xf)
+                            Counter = 0;
+                        InternalTick = 0;
+                    }
+                }
+            }
+        }
+        private Timer[] _timers = new Timer[3];
+
+        private byte _timer2CyclesDone;
+        /// <summary>
+        /// A single call to this method represents the passing of 16 clock cycles.
+        /// </summary>
+        private void IncrementTimers()
+        {
+            _timers[2].Tick();
+            _timer2CyclesDone++;
+            if (_timer2CyclesDone == 8)
+            {
+                _timer2CyclesDone = 0;
+                _timers[0].Tick();
+                _timers[1].Tick();
+            }
+        }
 
         // External entry points for I/O ports
-        public byte Port0 { get { return Port0Out; } set { Port0In = value; } }
-        public byte Port1 { get { return Port1Out; } set { Port1In = value; } }
-        public byte Port2 { get { return Port2Out; } set { Port2In = value; } }
-        public byte Port3 { get { return Port3Out; } set { Port3In = value; } }
+        public byte Port0 { get { return Port0Out; } set { Port0In = value; Console.WriteLine($"SPC 0 was told {value:x2}"); } }
+        public byte Port1 { get { return Port1Out; } set { Port1In = value; Console.WriteLine($"SPC 1 was told {value:x2}"); } }
+        public byte Port2 { get { return Port2Out; } set { Port2In = value; Console.WriteLine($"SPC 2 was told {value:x2}"); } }
+        public byte Port3 { get { return Port3Out; } set { Port3In = value; Console.WriteLine($"SPC 3 was told {value:x2}"); } }
 
         private byte Port0Out;
         private byte Port0In;
@@ -128,7 +199,7 @@ namespace RemeSnes.Hardware.Audio
         /// </summary>
         private byte ReadCodeByte()
         {
-            return Psram[ProgramCounter++];
+            return ReadByte(ProgramCounter++);
         }
 
         /// <summary>
@@ -213,37 +284,22 @@ namespace RemeSnes.Hardware.Audio
             }
             else
             {
-                switch (address)
+                return address switch
                 {
-                    case 0xf2:
-                        return DspAddress;
-                    case 0xf3:
-                        return _dsp.Read(DspAddress);
-                    case 0xf4:
-                        return Port0In;
-                    case 0xf5:
-                        return Port1In;
-                    case 0xf6:
-                        return Port2In;
-                    case 0xf7:
-                        return Port3In;
-                    case 0xf8:
-                        return RegisterF8;
-                    case 0xf9:
-                        return RegisterF9;
-                    case 0xfa:
-                    case 0xfb:
-                    case 0xfc:
-                        return 0;
-                    case 0xfd:
-                        return Counter0;
-                    case 0xfe:
-                        return Counter1;
-                    case 0xff:
-                        return Counter2;
-                    default:
-                        throw new Exception("Unhandled register read address: " + address);
-                }
+                    0xf2 => DspAddress,
+                    0xf3 => _dsp.Read(DspAddress),
+                    0xf4 => Port0In,
+                    0xf5 => Port1In,
+                    0xf6 => Port2In,
+                    0xf7 => Port3In,
+                    0xf8 => RegisterF8,
+                    0xf9 => RegisterF9,
+                    0xfa or 0xfb or 0xfc => 0,
+                    0xfd => _timers[0].ReadCounter(),
+                    0xfe => _timers[1].ReadCounter(),
+                    0xff => _timers[2].ReadCounter(),
+                    _ => throw new Exception("Unhandled register read address: " + address),
+                };
             }
         }
 
@@ -276,15 +332,19 @@ namespace RemeSnes.Hardware.Audio
                         break;
                     case 0xf4:
                         Port0Out = b;
+                        Console.WriteLine($"SPC 0 says {Port0Out:x2}");
                         break;
                     case 0xf5:
                         Port1Out = b;
+                        Console.WriteLine($"SPC 1 says {Port1Out:x2}");
                         break;
                     case 0xf6:
                         Port2Out = b;
+                        Console.WriteLine($"SPC 2 says {Port2Out:x2}");
                         break;
                     case 0xf7:
                         Port3Out = b;
+                        Console.WriteLine($"SPC 3 says {Port3Out:x2}");
                         break;
                     case 0xf8:
                         RegisterF8 = b;
@@ -293,13 +353,13 @@ namespace RemeSnes.Hardware.Audio
                         RegisterF9 = b;
                         break;
                     case 0xfa:
-                        Timer0 = b;
+                        _timers[0].Target = b;
                         break;
                     case 0xfb:
-                        Timer1 = b;
+                        _timers[1].Target = b;
                         break;
                     case 0xfc:
-                        Timer2 = b;
+                        _timers[2].Target = b;
                         break;
 
                     default:
@@ -322,6 +382,7 @@ namespace RemeSnes.Hardware.Audio
         // TODO add functions for addressing modes so each instruction can be short
         public void RunOneInstruction()
         {
+            Console.WriteLine($"SPC running at {ProgramCounter:x4}");
             var opcode = ReadCodeByte();
 
             switch (opcode)
@@ -1555,10 +1616,9 @@ namespace RemeSnes.Hardware.Audio
 
         private void HandleControlWrite(byte b)
         {
-            // TODO handle timers
-            _timer0Active = (b & 0x1) != 0;
-            _timer1Active = (b & 0x2) != 0;
-            _timer2Active = (b & 0x4) != 0;
+            _timers[0].SetEnabled((b & 0x1) != 0);
+            _timers[1].SetEnabled((b & 0x2) != 0);
+            _timers[2].SetEnabled((b & 0x4) != 0);
             if ((b & 0x10) != 0)
             {
                 Port0In = 0;
