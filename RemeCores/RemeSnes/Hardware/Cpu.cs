@@ -1,7 +1,13 @@
-﻿namespace RemeSnes.Hardware
+﻿using static RemeSnes.RemeSnes;
+
+namespace RemeSnes.Hardware
 {
+    /// <summary>
+    /// Runs at 21.477273 MHz.
+    /// </summary>
     internal class Cpu
     {
+        // Processor Registers
         public ushort Accumulator;
         public ushort X;
         public ushort Y;
@@ -12,6 +18,9 @@
         public byte DataBank;
         public ushort DirectPage;
         public ushort Stack;
+
+        // Emulation state
+        ulong _cyclesRun;
 
         public const byte DIRECT_PAGE_BANK = 0x7e;
 
@@ -28,15 +37,13 @@
         // TODO zero out high byte of index registers when switching size
         // TODO implement decimal mode
         private Bus _bus;
-        private Rom _rom;
 
         public bool WaitingForVBlank { get; private set; }
 
-        public Cpu(Rom rom)
+        public Cpu()
         {
-            _rom = rom;
-            _cpuThread = new Thread(ThreadLoop) { Name = "CPU Thread" };
-            _cpuThread.Start();
+            //_cpuThread = new Thread(ThreadLoop) { Name = "CPU Thread" };
+            //_cpuThread.Start();
         }
 
         public void SetBus(Bus bus)
@@ -44,11 +51,37 @@
             _bus = bus;
         }
 
+        internal void Run(uint cycles)
+        {
+            // For now a rough approximation
+            var instructions = cycles / 4;
+
+            if (_vblankOccurred)
+            {
+                // Handle NMI signal
+                _vblankOccurred = false;
+                WaitingForVBlank = false;
+                PushByte(ProgramBank);
+                PushShort(ProgramCounter);
+                ProgramBank = 0;
+                ProgramCounter = _bus.GetNMIVector(EmulationBit);
+            }
+
+            for (int i = 0; i < instructions; i++)
+            {
+                if (WaitingForVBlank) break;
+                RunOneInstruction();
+            }
+
+            _cyclesRun += cycles;
+        }
+
         public void EmulateFrame()
         {
             _emulateSignal.Set();
         }
 
+        private bool _vblankOccurred;
         private Thread _cpuThread;
         private ManualResetEvent _emulateSignal = new(false);
         private ManualResetEvent _vblankSignal = new(false);
@@ -75,7 +108,7 @@
                     PushByte(ProgramBank);
                     PushShort(ProgramCounter);
                     ProgramBank = 0;
-                    ProgramCounter = _rom.NMIVector;
+                    ProgramCounter = _bus.GetNMIVector(EmulationBit);
                     RunNmiHandler();
                 }
             }
@@ -101,6 +134,13 @@
         public byte RunOneInstruction()
         {
             var opcode = _bus.ReadByte(ProgramBank, ProgramCounter);
+            if (_breakpoints.ContainsKey((int)MakeAddress(ProgramBank, ProgramCounter)))
+            {
+                // TODO handle mirrored addresses (multiple addresses pointing to same location)
+                var bp = _breakpoints[(int)MakeAddress(ProgramBank, ProgramCounter)];
+                if ((bp.Flags & RemeSnes.BreakpointFlags.Execute) != 0)
+                    Console.WriteLine($"CPU BP hit: {bp.Name} at {bp.Address:x6}");
+            }
             ProgramCounter++;
 
             switch (opcode)
@@ -116,7 +156,7 @@
                     IRQDisable = true;
                     DecimalMode = false;
                     ProgramBank = 0;
-                    ProgramCounter = _rom.BRKVector;
+                    ProgramCounter = _bus.GetBRKVector(EmulationBit);
                     break;
                 case 0x2: // COP
                     PushByte(ProgramBank);
@@ -125,7 +165,7 @@
                     PushByte(ProcessorStatus);
                     ProgramBank = 0;
                     // TODO interrupt status flag?
-                    ProgramCounter = _rom.COPVector;
+                    ProgramCounter = _bus.GetCOPVector(EmulationBit);
                     // TODO decimal flag is cleared after the fact
                     break;
                 case 0xdb: // STP
@@ -238,8 +278,15 @@
 
                 case 0xeb: // XBA
                     Accumulator = (ushort)(((Accumulator & 0xff) << 8) | ((Accumulator & 0xff00) >> 8));
+                    SetZeroAndNegativeFlagsFromValue(Accumulator, true);
                     break;
                 case 0xfb: // XCE
+                    // Switching into native mode sets M (and X?) to 1
+                    if (!Carry && EmulationBit)
+                    {
+                        Accumulator8bit = true;
+                        Index8Bit = true;
+                    }
                     (Carry, EmulationBit) = (EmulationBit, Carry);
                     break;
 
@@ -255,50 +302,60 @@
                         SetXLowByte((byte)Accumulator);
                     else
                         X = Accumulator;
+                    SetZeroAndNegativeFlagsFromValue(X, Index8Bit);
                     break;
                 case 0xa8: // TAY
                     if (Index8Bit)
                         SetYLowByte((byte)Accumulator);
                     else
                         Y = Accumulator;
+                    SetZeroAndNegativeFlagsFromValue(Y, Index8Bit);
                     break;
                 case 0x8a: // TXA
                     if (Accumulator8bit)
                         SetAccumulatorLowByte((byte)X);
                     else
                         Accumulator = X;
+                    SetZeroAndNegativeFlagsFromAccumulator();
                     break;
                 case 0x98: // TYA
                     if (Accumulator8bit)
                         SetAccumulatorLowByte((byte)Y);
                     else
                         Accumulator = Y;
+                    SetZeroAndNegativeFlagsFromAccumulator();
                     break;
                 case 0xba: // TSX
                     if (Index8Bit)
                         SetXLowByte((byte)Stack);
                     else
                         X = Stack;
+                    SetZeroAndNegativeFlagsFromValue(X, Index8Bit);
                     break;
                 case 0x9a: // TXS
                     Stack = X;
+                    SetZeroAndNegativeFlagsFromValue(X, false);
                     break;
                 case 0x9b: // TXY
                     Y = X;
+                    SetZeroAndNegativeFlagsFromValue(Y, Index8Bit);
                     break;
                 case 0xbb: // TYX
                     X = Y;
+                    SetZeroAndNegativeFlagsFromValue(X, Index8Bit);
                     break;
 
                 case 0x5b: // TCD
                     DirectPage = Accumulator;
+                    SetZeroAndNegativeFlagsFromValue(Accumulator, false);
                     break;
                 case 0x7b: // TDC
                     Accumulator = DirectPage;
-                    SetZeroAndNegativeFlagsFromAccumulator();
+                    SetZeroAndNegativeFlagsFromValue(Accumulator, false);
                     break;
                 case 0x1b: // TCS
                     Stack = Accumulator;
+                    // No flags affected on TCS
                     break;
                 case 0x3b: // TSC
                     Accumulator = Stack;
@@ -1784,6 +1841,15 @@
             Stack += 2;
             return _bus.ReadShort(DIRECT_PAGE_BANK, (ushort)(Stack - 1));
         }
+
+        #region Debug
+        private Dictionary<int, RemeSnes.Breakpoint> _breakpoints = new();
+
+        internal void SetBreakpoint(Breakpoint bp)
+        {
+            _breakpoints[bp.Address] = bp;
+        }
+        #endregion
 
         private enum OperationType
         {

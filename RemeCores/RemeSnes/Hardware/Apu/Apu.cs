@@ -25,6 +25,16 @@
             _spc700.EmulateFrame();
         }
 
+        internal void Run(uint cycles)
+        {
+            _spc700.Run(cycles);
+        }
+
+        internal void SetBreakpoint(RemeSnes.Breakpoint bp)
+        {
+            _spc700.SetBreakpoint(bp);
+        }
+
         public byte Port0 { get { return _spc700.Port0; } set { _spc700.Port0 = value; } }
         public byte Port1 { get { return _spc700.Port1; } set { _spc700.Port1 = value; } }
         public byte Port2 { get { return _spc700.Port2; } set { _spc700.Port2 = value; } }

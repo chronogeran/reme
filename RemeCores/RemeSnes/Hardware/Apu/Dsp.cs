@@ -103,8 +103,12 @@
                     case 7:
                         Voices[voiceIndex].Gain = b;
                         break;
+                    case 8:
+                    case 9:
+                        // Read only registers ENVX and OUTX
+                        break;
                     default:
-                        throw new Exception("Unsupported voice register " + address);
+                        throw new Exception($"Unsupported voice register {address:x2}");
                 }
                 return;
             }

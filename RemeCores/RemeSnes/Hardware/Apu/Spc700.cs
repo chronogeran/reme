@@ -1,13 +1,23 @@
-﻿using System.Diagnostics;
-using Utils;
+﻿using Utils;
+using static RemeSnes.RemeSnes;
 
 namespace RemeSnes.Hardware.Audio
 {
+    // Currently running into some timing issue where when I have print statements, stuff works, when not, it stalls waiting for the other chip to write something.
+    // Maybe because NMI isn't enabled, CPU runs forever and doesn't give APU a chance to catch up? Nah, there's probably more to it than that.
+    /// <summary>
+    /// Runs at 1.024 MHz. (Or 1.0269?)
+    /// (Around 20 times slower than the master clock.)
+    /// </summary>
     internal class Spc700
     {
         public byte[] Psram = new byte[0x10000]; // Holds code and data for the SPC700
 
         private Dsp _dsp;
+
+        // Emulation state
+        private ulong _cyclesRun;
+        private Queue<ushort> _previousInstructionAddresses = new();
 
         private static readonly byte[] IPL_ROM = new byte[]
         {
@@ -19,8 +29,8 @@ namespace RemeSnes.Hardware.Audio
 
         public Spc700()
         {
-            _cpuThread = new Thread(ThreadLoop) { Name = "SPC-700 Thread" };
-            _cpuThread.Start();
+            //_cpuThread = new Thread(ThreadLoop) { Name = "SPC-700 Thread" };
+            //_cpuThread.Start();
         }
 
         public void SetDsp(Dsp dsp) { _dsp = dsp; }
@@ -43,6 +53,26 @@ namespace RemeSnes.Hardware.Audio
             Y = 0;
             ProgramStatus = 0;
             ProgramCounter = 0xffc0;
+        }
+
+        internal void Run(uint cycles)
+        {
+            // For now a rough approximation
+            var instructions = cycles / 5;
+
+            // Clocks tick every 16 cycles.
+            var timerTicks = (_cyclesRun + cycles) / 16 - (_cyclesRun / 16);
+            for (uint i = 0; i < timerTicks; i++)
+            {
+                IncrementTimers();
+            }
+
+            for (int i = 0; i < instructions; i++)
+            {
+                RunOneInstruction();
+            }
+
+            _cyclesRun += cycles;
         }
 
         internal void EmulateFrame()
@@ -175,10 +205,10 @@ namespace RemeSnes.Hardware.Audio
         }
 
         // External entry points for I/O ports
-        public byte Port0 { get { return Port0Out; } set { Port0In = value; Console.WriteLine($"SPC 0 was told {value:x2}"); } }
-        public byte Port1 { get { return Port1Out; } set { Port1In = value; Console.WriteLine($"SPC 1 was told {value:x2}"); } }
-        public byte Port2 { get { return Port2Out; } set { Port2In = value; Console.WriteLine($"SPC 2 was told {value:x2}"); } }
-        public byte Port3 { get { return Port3Out; } set { Port3In = value; Console.WriteLine($"SPC 3 was told {value:x2}"); } }
+        public byte Port0 { get { return Port0Out; } set { Port0In = value; /*Console.WriteLine($"SPC 0 was told {value:x2}");*/ } }
+        public byte Port1 { get { return Port1Out; } set { Port1In = value; /*Console.WriteLine($"SPC 1 was told {value:x2}");*/ } }
+        public byte Port2 { get { return Port2Out; } set { Port2In = value; /*Console.WriteLine($"SPC 2 was told {value:x2}");*/ } }
+        public byte Port3 { get { return Port3Out; } set { Port3In = value; /*Console.WriteLine($"SPC 3 was told {value:x2}");*/ } }
 
         private byte Port0Out;
         private byte Port0In;
@@ -286,6 +316,8 @@ namespace RemeSnes.Hardware.Audio
             {
                 return address switch
                 {
+                    0xf0 => 0, // Test register not implemented
+                    0xf1 => 0,
                     0xf2 => DspAddress,
                     0xf3 => _dsp.Read(DspAddress),
                     0xf4 => Port0In,
@@ -316,11 +348,16 @@ namespace RemeSnes.Hardware.Audio
         private void WriteByte(ushort address, byte b)
         {
             if (address < 0xf0 || address > 0xff)
+            {
                 Psram[address] = b;
+            }
             else
             {
                 switch (address)
                 {
+                    case 0xf0:
+                        // Test register not implemented
+                        break;
                     case 0xf1:
                         HandleControlWrite(b);
                         break;
@@ -332,19 +369,15 @@ namespace RemeSnes.Hardware.Audio
                         break;
                     case 0xf4:
                         Port0Out = b;
-                        Console.WriteLine($"SPC 0 says {Port0Out:x2}");
                         break;
                     case 0xf5:
                         Port1Out = b;
-                        Console.WriteLine($"SPC 1 says {Port1Out:x2}");
                         break;
                     case 0xf6:
                         Port2Out = b;
-                        Console.WriteLine($"SPC 2 says {Port2Out:x2}");
                         break;
                     case 0xf7:
                         Port3Out = b;
-                        Console.WriteLine($"SPC 3 says {Port3Out:x2}");
                         break;
                     case 0xf8:
                         RegisterF8 = b;
@@ -361,9 +394,14 @@ namespace RemeSnes.Hardware.Audio
                     case 0xfc:
                         _timers[2].Target = b;
                         break;
+                    case 0xfd:
+                    case 0xfe:
+                    case 0xff:
+                        // Read-only Counter registers
+                        break;
 
                     default:
-                        throw new Exception("Unhandled register address: " + address);
+                        throw new Exception($"Unhandled register address: {address:x2}");
                 }
             }
         }
@@ -382,7 +420,24 @@ namespace RemeSnes.Hardware.Audio
         // TODO add functions for addressing modes so each instruction can be short
         public void RunOneInstruction()
         {
-            Console.WriteLine($"SPC running at {ProgramCounter:x4}");
+            _previousInstructionAddresses.Enqueue(ProgramCounter);
+            if (_previousInstructionAddresses.Count > 30)
+                _previousInstructionAddresses.Dequeue();
+
+            //Console.WriteLine($"SPC running at {ProgramCounter:x4}");
+            if (_breakpoints.ContainsKey(ProgramCounter))
+            {
+                var bp = _breakpoints[ProgramCounter];
+                if ((bp.Flags & BreakpointFlags.Execute) != 0)
+                {
+                    Console.WriteLine($"SPC BP hit: {bp.Name} at {bp.Address:x4}");
+                }
+            }
+
+            if (ProgramCounter < 0x0800)
+                Console.WriteLine($"Unexpectedly low program counter: {ProgramCounter:x4}");
+            else if (ProgramCounter > 0x17ea && !_iplRegionReadable)
+                Console.WriteLine($"Unexpectedly high program counter: {ProgramCounter:x4}");
             var opcode = ReadCodeByte();
 
             switch (opcode)
@@ -1417,7 +1472,7 @@ namespace RemeSnes.Hardware.Audio
 
         private void PushByte(byte b)
         {
-            Psram[Stack--] = b;
+            Psram[0x100 | Stack--] = b;
         }
 
         private void PushShort(ushort u)
@@ -1428,7 +1483,7 @@ namespace RemeSnes.Hardware.Audio
 
         private byte PullByte()
         {
-            return Psram[++Stack];
+            return Psram[0x100 | ++Stack];
         }
 
         private ushort PullShort()
@@ -1630,6 +1685,14 @@ namespace RemeSnes.Hardware.Audio
                 Port3In = 0;
             }
             _iplRegionReadable = (b & 0x80) != 0;
+            Console.WriteLine($"Control write: {b:x2}");
+        }
+
+        private Dictionary<int, RemeSnes.Breakpoint> _breakpoints = new();
+
+        internal void SetBreakpoint(Breakpoint bp)
+        {
+            _breakpoints[bp.Address] = bp;
         }
 
         private enum AddressingType

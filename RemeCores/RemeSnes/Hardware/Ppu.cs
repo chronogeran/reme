@@ -2,6 +2,7 @@
 {
     /// <summary>
     /// Represents the S-PPU, or both the PPU 1 and 2, together with associated RAM.
+    /// Render frame rate: 60.0988 Hz
     /// </summary>
     internal class Ppu
     {
@@ -18,15 +19,38 @@
 
         private Bus _bus;
 
+        // Emulation state
+        ulong _cyclesRun;
+
         public Ppu()
         {
-            _cpuThread = new Thread(ThreadLoop) { Name = "PPU Thread" };
-            _cpuThread.Start();
+            //_cpuThread = new Thread(ThreadLoop) { Name = "PPU Thread" };
+            //_cpuThread.Start();
         }
 
         internal void SetBus(Bus bus)
         {
             _bus = bus;
+        }
+
+        private static readonly uint VBLANK_TIME_WITHIN_FRAME_IN_CYCLES = 306900;
+
+        internal void Run(uint cycles)
+        {
+            // For now just generate V-Blanks
+            if (_cyclesRun / RemeSnes.MASTER_CYCLES_PER_FRAME < VBLANK_TIME_WITHIN_FRAME_IN_CYCLES
+                && (_cyclesRun + cycles) / RemeSnes.MASTER_CYCLES_PER_FRAME >= VBLANK_TIME_WITHIN_FRAME_IN_CYCLES)
+            {
+                _inVBlank = true;
+                _bus.SendVBlank();
+            }
+            else if (_cyclesRun / RemeSnes.MASTER_CYCLES_PER_FRAME < (_cyclesRun + cycles) / RemeSnes.MASTER_CYCLES_PER_FRAME)
+            {
+                // End of frame hit
+                _inVBlank = false;
+            }
+
+            _cyclesRun += cycles;
         }
 
         internal void Reset()

@@ -177,6 +177,14 @@ namespace RemeSnes.Hardware
                         return (byte)Joypad4;
                     case HardwareRegisterHighOffset.Joypad4High:
                         return Joypad4.GetHighByte();
+                    case HardwareRegisterHighOffset.DivideResultLow:
+                        return (byte)DivideResult;
+                    case HardwareRegisterHighOffset.DivideResultHigh:
+                        return DivideResult.GetHighByte();
+                    case HardwareRegisterHighOffset.ProductOrRemainderLow:
+                        return (byte)ProductOrRemainder;
+                    case HardwareRegisterHighOffset.ProductOrRemainderHigh:
+                        return ProductOrRemainder.GetHighByte();
                 }
             }
 
@@ -268,6 +276,7 @@ namespace RemeSnes.Hardware
                 {
                     case HardwareRegisterHighOffset.NmiVHCountJoypadEnable:
                         NmiVHCountJoypadEnable = value;
+                        Console.WriteLine($"NMI enabled: {NmiEnable}");
                         break;
                 }
 
@@ -331,6 +340,21 @@ namespace RemeSnes.Hardware
                 VramAddress += 128;
         }
         #endregion
+
+        internal ushort GetNMIVector(bool emulationMode)
+        {
+            return _rom.NMIVector;
+        }
+
+        internal ushort GetBRKVector(bool emulationMode)
+        {
+            return _rom.BRKVector;
+        }
+
+        internal ushort GetCOPVector(bool emulationMode)
+        {
+            return _rom.COPVector;
+        }
 
         #region Addressing
         private byte[] GetMemory(byte bank, ushort address, out int index)
