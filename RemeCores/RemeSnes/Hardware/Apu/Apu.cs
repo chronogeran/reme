@@ -9,18 +9,19 @@
         private Spc700 _spc700 = new Spc700();
         private Dsp _dsp = new Dsp();
 
-        public Apu()
+        internal Apu()
         {
             _spc700.SetDsp(_dsp);
+            _dsp.SetRam(_spc700.Psram);
         }
 
-        public void Reset()
+        internal void Reset()
         {
             _spc700.Reset();
             //_dsp.Reset();
         }
 
-        public void EmulateFrame()
+        internal void EmulateFrame()
         {
             _spc700.EmulateFrame();
         }
@@ -35,9 +36,9 @@
             _spc700.SetBreakpoint(bp);
         }
 
-        public byte Port0 { get { return _spc700.Port0; } set { _spc700.Port0 = value; } }
-        public byte Port1 { get { return _spc700.Port1; } set { _spc700.Port1 = value; } }
-        public byte Port2 { get { return _spc700.Port2; } set { _spc700.Port2 = value; } }
-        public byte Port3 { get { return _spc700.Port3; } set { _spc700.Port3 = value; } }
+        internal byte Port0 { get { return _spc700.Port0; } set { _spc700.Port0 = value; } }
+        internal byte Port1 { get { return _spc700.Port1; } set { _spc700.Port1 = value; } }
+        internal byte Port2 { get { return _spc700.Port2; } set { _spc700.Port2 = value; } }
+        internal byte Port3 { get { return _spc700.Port3; } set { _spc700.Port3 = value; } }
     }
 }

@@ -417,14 +417,12 @@ namespace RemeSnes.Hardware.Audio
             WriteShort(GetCodeParamEffectiveAddress(addressingType), s);
         }
 
-        // TODO add functions for addressing modes so each instruction can be short
         public void RunOneInstruction()
         {
             _previousInstructionAddresses.Enqueue(ProgramCounter);
             if (_previousInstructionAddresses.Count > 30)
                 _previousInstructionAddresses.Dequeue();
 
-            //Console.WriteLine($"SPC running at {ProgramCounter:x4}");
             if (_breakpoints.ContainsKey(ProgramCounter))
             {
                 var bp = _breakpoints[ProgramCounter];
@@ -502,19 +500,7 @@ namespace RemeSnes.Hardware.Audio
                     }
                     break;
                 case 0x7a: // ADDW
-                    {
-                        var dpOffset = GetCodeParamEffectiveAddress(AddressingType.DirectPage);
-                        var word = Accumulator | Y << 8;
-                        var word2 = ReadShort(dpOffset);
-                        var result = word + word2 + (Carry ? 1 : 0);
-                        Carry = result > 0xffff;
-                        Negative = (result & 0x8000) != 0;
-                        Zero = (result & 0xffff) == 0;
-                        Overflow = (~(word ^ word2) & (word2 ^ result) & 0x8000) != 0;
-                        HalfCarry = (word >> 8 & 0x0F) + (word2 >> 8 & 0x0F) + ((word2 & 0xff) + (word & 0xff) > 0xff ? 1 : 0) > 0x0F;
-                        Accumulator = (byte)result;
-                        Y = (byte)(result >> 8);
-                    }
+                    DoAddWord((ushort)(Accumulator | Y << 8), ReadShort(AddressingType.DirectPage));
                     break;
 
                 // SBC
@@ -563,19 +549,7 @@ namespace RemeSnes.Hardware.Audio
                     }
                     break;
                 case 0x9a: // SUBW
-                    {
-                        var dpOffset = GetCodeParamEffectiveAddress(AddressingType.DirectPage);
-                        var word = Accumulator | Y << 8;
-                        var word2 = ReadShort(dpOffset);
-                        var result = word - word2 - (Carry ? 0 : 1);
-                        Carry = word >= word2;
-                        Negative = (result & 0x8000) != 0;
-                        Zero = (result & 0xffff) == 0;
-                        Overflow = ((word ^ word2) & (word ^ (ushort)result) & 0x8000) != 0;
-                        HalfCarry = (word >> 8 & 0x0F) - (word2 >> 8 & 0x0F) - ((byte)word2 > (byte)word ? 1 : 0) <= 0x0F;
-                        Accumulator = (byte)result;
-                        Y = (byte)(result >> 8);
-                    }
+                    DoSubtractWord((ushort)(Accumulator | Y << 8), ReadShort(AddressingType.DirectPage));
                     break;
 
                 // CMP
@@ -1556,6 +1530,18 @@ namespace RemeSnes.Hardware.Audio
             return (byte)result;
         }
 
+        private void DoAddWord(ushort word, ushort word2)
+        {
+            var result = word + word2 + (Carry ? 1 : 0);
+            Carry = result > 0xffff;
+            Negative = (result & 0x8000) != 0;
+            Zero = (result & 0xffff) == 0;
+            Overflow = (~(word ^ word2) & (word2 ^ result) & 0x8000) != 0;
+            HalfCarry = (word >> 8 & 0x0F) + (word2 >> 8 & 0x0F) + ((word2 & 0xff) + (word & 0xff) > 0xff ? 1 : 0) > 0x0F;
+            Accumulator = (byte)result;
+            Y = (byte)(result >> 8);
+        }
+
         private byte DoSubtract(byte a, byte b)
         {
             var result = a - b - (Carry ? 0 : 1);
@@ -1564,6 +1550,11 @@ namespace RemeSnes.Hardware.Audio
             Carry = a >= b;
             SetNegativeAndZero((byte)result);
             return (byte)result;
+        }
+
+        private void DoSubtractWord(ushort word, ushort word2)
+        {
+
         }
 
         private void DoCompare(byte a, byte b)
