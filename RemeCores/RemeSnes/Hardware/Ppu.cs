@@ -1,4 +1,6 @@
-﻿namespace RemeSnes.Hardware
+﻿using System.Threading;
+
+namespace RemeSnes.Hardware
 {
     /// <summary>
     /// Represents the S-PPU, or both the PPU 1 and 2, together with associated RAM.
@@ -63,7 +65,7 @@
         }
 
         private Thread _cpuThread;
-        private ManualResetEvent _emulateSignal = new(false);
+        private ManualResetEvent _emulateSignal = new ManualResetEvent(false);
         private bool _shuttingDown = false;
         private void ThreadLoop()
         {

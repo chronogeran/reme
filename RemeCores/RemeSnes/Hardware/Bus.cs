@@ -1,6 +1,6 @@
 ﻿using Utils;
 using RemeSnes.Hardware.Audio;
-using System.Windows.Markup;
+using System;
 
 namespace RemeSnes.Hardware
 {

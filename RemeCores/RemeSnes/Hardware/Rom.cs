@@ -1,4 +1,5 @@
-﻿using Utils;
+﻿using System;
+using Utils;
 
 namespace RemeSnes.Hardware
 {

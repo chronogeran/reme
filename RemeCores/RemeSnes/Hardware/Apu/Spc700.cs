@@ -1,4 +1,7 @@
-﻿using Utils;
+﻿using System;
+using System.Collections.Generic;
+using System.Threading;
+using Utils;
 using static RemeSnes.RemeSnes;
 
 namespace RemeSnes.Hardware.Audio
@@ -17,7 +20,7 @@ namespace RemeSnes.Hardware.Audio
 
         // Emulation state
         private ulong _cyclesRun;
-        private Queue<ushort> _previousInstructionAddresses = new();
+        private Queue<ushort> _previousInstructionAddresses = new Queue<ushort>();
 
         private static readonly byte[] IPL_ROM = new byte[]
         {
@@ -46,7 +49,7 @@ namespace RemeSnes.Hardware.Audio
                 _cpuThread = new Thread(ThreadLoop);
                 _cpuThread.Start();
             }
-            Array.Clear(Psram);
+            Array.Clear(Psram, 0, Psram.Length);
             _iplRegionReadable = true;
             Accumulator = 0;
             X = 0;
@@ -80,7 +83,7 @@ namespace RemeSnes.Hardware.Audio
             _emulateSignal.Set();
         }
         private Thread _cpuThread;
-        private ManualResetEvent _emulateSignal = new(false);
+        private ManualResetEvent _emulateSignal = new ManualResetEvent(false);
 
         private volatile bool _shuttingDown = false;
         private volatile bool _running = false;
@@ -326,7 +329,9 @@ namespace RemeSnes.Hardware.Audio
                     0xf7 => Port3In,
                     0xf8 => RegisterF8,
                     0xf9 => RegisterF9,
-                    0xfa or 0xfb or 0xfc => 0,
+                    0xfa => 0,
+                    0xfb => 0,
+                    0xfc => 0,
                     0xfd => _timers[0].ReadCounter(),
                     0xfe => _timers[1].ReadCounter(),
                     0xff => _timers[2].ReadCounter(),
@@ -1679,7 +1684,7 @@ namespace RemeSnes.Hardware.Audio
             Console.WriteLine($"Control write: {b:x2}");
         }
 
-        private Dictionary<int, RemeSnes.Breakpoint> _breakpoints = new();
+        private Dictionary<int, RemeSnes.Breakpoint> _breakpoints = new Dictionary<int, RemeSnes.Breakpoint>();
 
         internal void SetBreakpoint(Breakpoint bp)
         {

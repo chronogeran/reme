@@ -1,4 +1,7 @@
-﻿using static RemeSnes.RemeSnes;
+﻿using System;
+using System.Collections.Generic;
+using System.Threading;
+using static RemeSnes.RemeSnes;
 
 namespace RemeSnes.Hardware
 {
@@ -83,8 +86,8 @@ namespace RemeSnes.Hardware
 
         private bool _vblankOccurred;
         private Thread _cpuThread;
-        private ManualResetEvent _emulateSignal = new(false);
-        private ManualResetEvent _vblankSignal = new(false);
+        private ManualResetEvent _emulateSignal = new ManualResetEvent(false);
+        private ManualResetEvent _vblankSignal = new ManualResetEvent(false);
         private bool _shuttingDown = false;
         private void ThreadLoop()
         {
@@ -1843,7 +1846,7 @@ namespace RemeSnes.Hardware
         }
 
         #region Debug
-        private Dictionary<int, RemeSnes.Breakpoint> _breakpoints = new();
+        private Dictionary<int, RemeSnes.Breakpoint> _breakpoints = new Dictionary<int, RemeSnes.Breakpoint>();
 
         internal void SetBreakpoint(Breakpoint bp)
         {

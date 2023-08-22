@@ -1,7 +1,9 @@
 ﻿using RemeSnes.Hardware;
 using RemeSnes.Hardware.Audio;
+using System;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Threading;
 
 namespace RemeSnes
 {
@@ -63,16 +65,21 @@ namespace RemeSnes
             return Ppu.RenderedFrameData;
         }
 
-        //public Span<byte> GetAudioBuffer()
-        //{
-        //}
+        public short[] GetAudioBufferRight()
+        {
+            return Apu.GetAudioBufferRight();
+        }
+        public short[] GetAudioBufferLeft()
+        {
+            return Apu.GetAudioBufferLeft();
+        }
         public int GetValidAudioSampleLength()
         {
-            return 0;
+            return Apu.GetNumAudioSamples();
         }
         public int GetValidAudioSampleIndex()
         {
-            return 0;
+            return Apu.GetAudioSampleStartIndex();
         }
 
         public void Update()
@@ -131,7 +138,7 @@ namespace RemeSnes
 
         // Single thread per emulator approach
         private Thread _emulationThread;
-        private ManualResetEvent _emulateSignal = new(false);
+        private ManualResetEvent _emulateSignal = new ManualResetEvent(false);
         private bool _shuttingDown;
         private void ThreadLoop()
         {
@@ -165,7 +172,7 @@ namespace RemeSnes
             Ppu.Run(MASTER_CYCLES_PER_FRAME - masterCyclesRun);
 
             sw.Stop();
-            Console.WriteLine($"Frame emulated in {sw.Elapsed.TotalMilliseconds} ms");
+            //Console.WriteLine($"Frame emulated in {sw.Elapsed.TotalMilliseconds} ms");
         }
     }
 }

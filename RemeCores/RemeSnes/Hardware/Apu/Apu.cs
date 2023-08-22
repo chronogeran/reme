@@ -29,6 +29,24 @@
         internal void Run(uint cycles)
         {
             _spc700.Run(cycles);
+            _dsp.Run(cycles * 3); // 3 times faster than SPC700
+        }
+
+        internal short[] GetAudioBufferLeft()
+        {
+            return _dsp.OutputSamplesLeft;
+        }
+        internal short[] GetAudioBufferRight()
+        {
+            return _dsp.OutputSamplesRight;
+        }
+        internal int GetAudioSampleStartIndex()
+        {
+            return _dsp.GetAudioSampleStartIndex();
+        }
+        internal int GetNumAudioSamples()
+        {
+            return _dsp.GetNumAudioSamples();
         }
 
         internal void SetBreakpoint(RemeSnes.Breakpoint bp)
