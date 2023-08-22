@@ -337,8 +337,36 @@ namespace RemeSnes.Hardware.Audio
         {
             for (int i = 0; i < Voices.Length; i++)
             {
-                // TODO update ENV value
+                UpdateEnvValue(i);
                 var sample = Voices[i].CurrentBrrBlock[Voices[i].PitchCounter >> 12];
+            }
+        }
+
+        private void UpdateEnvValue(int voiceIndex)
+        {
+            Voices[voiceIndex].SamplesSinceEnvStep++;
+            if (Voices[voiceIndex].SamplesSinceEnvStep == Voices[voiceIndex].GetSamplesForEnvStep())
+            {
+                Voices[voiceIndex].SamplesSinceEnvStep = 0;
+                switch (Voices[voiceIndex].AdsrState)
+                {
+                    case AdsrState.Attack:
+                        Voices[voiceIndex].ModifyLevel(0x20);
+                        if (Voices[voiceIndex].Level >= 0x7e0)
+                            Voices[voiceIndex].AdsrState = AdsrState.Decay;
+                        break;
+                    case AdsrState.Decay:
+                        Voices[voiceIndex].ModifyLevel((short)-(((Voices[voiceIndex].Level - 1) >> 8) + 1));
+                        if (Voices[voiceIndex].Level <= Voices[voiceIndex].GetSustainLevel())
+                            Voices[voiceIndex].AdsrState = AdsrState.Sustain;
+                        break;
+                    case AdsrState.Sustain:
+                        Voices[voiceIndex].ModifyLevel((short)-(((Voices[voiceIndex].Level - 1) >> 8) + 1));
+                        break;
+                    case AdsrState.Release:
+                        Voices[voiceIndex].ModifyLevel(-8);
+                        break;
+                }
             }
         }
 
@@ -370,7 +398,7 @@ namespace RemeSnes.Hardware.Audio
                 if (!Voices[voiceIndex].Loop)
                 {
                     KeyOff(voiceIndex);
-                    //Voices[voiceIndex].AdsrState = AdsrState.Release;
+                    Voices[voiceIndex].SetLevel(0);
                 }
             }
             else
@@ -382,14 +410,16 @@ namespace RemeSnes.Hardware.Audio
         private void KeyOn(int voiceIndex)
         {
             Voices[voiceIndex].CurrentBrrBlockAddress = GetStartAddress(voiceIndex);
-            Voices[voiceIndex].EnvX = 0;
+            Voices[voiceIndex].SetLevel(0);
             Voices[voiceIndex].PitchCounter = 0;
             Voices[voiceIndex].AdsrState = AdsrState.Attack;
+            Voices[voiceIndex].SamplesSinceEnvStep = 0;
         }
 
         private void KeyOff(int voiceIndex)
         {
             Voices[voiceIndex].AdsrState = AdsrState.Release;
+            Voices[voiceIndex].SamplesSinceEnvStep = 0;
         }
 
         private ushort GetSampleTableEntryAddress(int voiceIndex)
@@ -462,8 +492,8 @@ namespace RemeSnes.Hardware.Audio
             public byte Adsr1;
             public byte Adsr2;
             public byte Gain;
-            public byte EnvX; // 7-bit unsigned current envelope value
-            public sbyte OutX; // 8-bit signed wave height * envelope value (not multiplied by volume)
+            public byte EnvX; // 7-bit unsigned current envelope value (top 7 of Level)
+            public sbyte OutX; // 8-bit signed wave height * envelope value (not multiplied by volume) (upper 8 bits of 15 bit sample)
             public byte Unused1;
             public byte Unused2;
 
@@ -474,12 +504,64 @@ namespace RemeSnes.Hardware.Audio
             public short[] CurrentBrrBlock;
             public bool Loop;
             public AdsrState AdsrState;
+            public ushort Level; // 11-bits unsigned current envelope value
+            public ushort SamplesSinceEnvStep;
 
             public short lastSample;
             public short lastSample2;
 
             public bool AdsrEnabled { get { return (Adsr1 & 0x80) != 0; } }
+
+            public void ModifyLevel(short change)
+            {
+                Level = (ushort)(Level + change);
+                UpdateEnvX();
+            }
+
+            public void SetLevel(ushort level)
+            {
+                Level = level;
+                UpdateEnvX();
+            }
+
+            private void UpdateEnvX()
+            {
+                EnvX = (byte)((Level >> 4) & 0x7f);
+            }
+
+            public ushort GetSamplesForEnvStep()
+            {
+                switch (AdsrState)
+                {
+                    case AdsrState.Attack:
+                        var attackRate = (Adsr1 & 0xf) * 2 + 1;
+                        return RateTable[attackRate];
+                    case AdsrState.Decay:
+                        var decayRate = ((Adsr1 >> 4) & 0x7) * 2 + 16;
+                        return RateTable[decayRate];
+                    case AdsrState.Sustain:
+                        var sustainRate = (Adsr2 & 0x1f);
+                        return RateTable[sustainRate];
+                    case AdsrState.Release:
+                        return 1;
+                    default:
+                        throw new Exception("Unexpected ADSR state: " + AdsrState);
+                }
+            }
+
+            public ushort GetSustainLevel()
+            {
+                return (ushort)(((Adsr2 >> 5) + 1) * 0x100);
+            }
         }
+
+        /*  00h=Stop   04h=1024  08h=384   0Ch=160   10h=64   14h=24   18h=10   1Ch=4
+            01h=2048   05h=768   09h=320   0Dh=128   11h=48   15h=20   19h=8    1Dh=3
+            02h=1536   06h=640   0Ah=256   0Eh=96    12h=40   16h=16   1Ah=6    1Eh=2
+            03h=1280   07h=512   0Bh=192   0Fh=80    13h=32   17h=12   1Bh=5    1Fh=1*/
+        private static ushort[] RateTable = new ushort[]
+            { 0xffff, 0x800, 0x600, 0x500, 0x400, 0x300, 0x280, 0x200, 0x180, 0x140, 0x100,
+                0xc0, 0xa0, 0x80, 0x60, 0x50, 0x40, 0x30, 0x28, 0x20, 0x18, 0x14, 0x10, 0xc, 0xa, 8, 6, 5, 4, 3, 2, 1 };
 
         private enum AdsrState
         {
