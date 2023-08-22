@@ -86,6 +86,14 @@ namespace RemeSnes.Hardware.Audio
         private byte EchoBufferStartOffset;
         private byte EchoDelay;
 
+        public Dsp()
+        {
+            for (int i = 0; i < Voices.Length; i++)
+            {
+                Voices[i].CurrentBrrBlock = new short[16];
+            }
+        }
+
         private bool Mute { get { return (DspFlags & 0x40) != 0; } }
 
         private ReadOnlyMemory<byte> _psram;
@@ -215,7 +223,7 @@ namespace RemeSnes.Hardware.Audio
                     for (int i = 0; i < Voices.Length; i++)
                     {
                         if ((b & 1) != 0)
-                            Voices[i].KeyOn();
+                            KeyOn(i);
                         b >>= 1;
                     }
                     break;
@@ -224,7 +232,7 @@ namespace RemeSnes.Hardware.Audio
                     for (int i = 0; i < Voices.Length; i++)
                     {
                         if ((b & 1) != 0)
-                            Voices[i].KeyOff();
+                            KeyOff(i);
                         b >>= 1;
                     }
                     break;
@@ -304,13 +312,6 @@ namespace RemeSnes.Hardware.Audio
             return 0;
         }
 
-        private void ReadSampleTable(byte voiceIndex)
-        {
-            var offset = SourceDirectoryOffset * 0x100 + Voices[voiceIndex].SourceNumber * 4;
-            var startAddress = (ushort)(_psram.Span[offset] | (_psram.Span[offset + 1] << 8));
-            var loopAddress = (ushort)(_psram.Span[offset + 2] | (_psram.Span[offset + 3] << 8));
-        }
-
         private short ApplyGaussianInterpolation(short sample, int interpolationIndex, short old, short older, short oldest)
         {
             // TODO with/without 16 bit overflow handling
@@ -321,16 +322,104 @@ namespace RemeSnes.Hardware.Audio
             return (short)(output >> 1);
         }
 
-        private void DecompressBrrBlock(int voiceIndex, byte[] source, int sourceOffset, byte[] destination, int destinationOffset)
+        /// <summary>
+        /// Executes at an emulated 32000 Hz, calculating one output sample per L/R channel.
+        /// </summary>
+        private void EachSampleCycle()
+        {
+            CalculateVoiceSamples(); // Updates ENVx and OUTx on each voice, which are used by the next step
+            GetOutputSamples();
+            // Are voice counters incremented first or last?
+            IncrementVoiceCounters();
+        }
+
+        private void CalculateVoiceSamples()
+        {
+            for (int i = 0; i < Voices.Length; i++)
+            {
+                // TODO update ENV value
+                var sample = Voices[i].CurrentBrrBlock[Voices[i].PitchCounter >> 12];
+            }
+        }
+
+        private void IncrementVoiceCounters()
+        {
+            for (int i = 0; i < Voices.Length; i++)
+            {
+                var step = Voices[i].Pitch;
+                if (i > 0 && (PitchModulation & (1 << i)) != 0)
+                {
+                    int factor = Voices[i - 1].OutX;
+                    factor = (factor >> 4) + 0x400;
+                    step = (ushort)((step * factor) >> 10);
+                }
+                var nextCounter = Voices[i].PitchCounter + step;
+                if ((nextCounter & 0x10000) != 0)
+                {
+                    AdvanceBrrBlock(i);
+                }
+                Voices[i].PitchCounter = (ushort)nextCounter;
+            }
+        }
+
+        private void AdvanceBrrBlock(int voiceIndex)
+        {
+            if ((EndX & (1 << voiceIndex)) != 0)
+            {
+                Voices[voiceIndex].CurrentBrrBlockAddress = GetLoopAddress(voiceIndex);
+                if (!Voices[voiceIndex].Loop)
+                {
+                    KeyOff(voiceIndex);
+                    //Voices[voiceIndex].AdsrState = AdsrState.Release;
+                }
+            }
+            else
+                Voices[voiceIndex].CurrentBrrBlockAddress += 9;
+
+            DecompressBrrBlock(voiceIndex);
+        }
+
+        private void KeyOn(int voiceIndex)
+        {
+            Voices[voiceIndex].CurrentBrrBlockAddress = GetStartAddress(voiceIndex);
+            Voices[voiceIndex].EnvX = 0;
+            Voices[voiceIndex].PitchCounter = 0;
+            Voices[voiceIndex].AdsrState = AdsrState.Attack;
+        }
+
+        private void KeyOff(int voiceIndex)
+        {
+            Voices[voiceIndex].AdsrState = AdsrState.Release;
+        }
+
+        private ushort GetSampleTableEntryAddress(int voiceIndex)
+        {
+            return (ushort)(SourceDirectoryOffset * 0x100 + Voices[voiceIndex].SourceNumber * 4);
+        }
+
+        private ushort GetStartAddress(int voiceIndex)
+        {
+            var tableEntryOffset = GetSampleTableEntryAddress(voiceIndex);
+            return (ushort)(_psram.Span[tableEntryOffset] | (_psram.Span[tableEntryOffset + 1] << 8));
+        }
+
+        private ushort GetLoopAddress(int voiceIndex)
+        {
+            var tableEntryOffset = GetSampleTableEntryAddress(voiceIndex);
+            return (ushort)(_psram.Span[tableEntryOffset + 2] | (_psram.Span[tableEntryOffset + 3] << 8));
+        }
+
+        private void DecompressBrrBlock(int voiceIndex)
         {
             // https://wiki.superfamicom.org/spc700-reference#bit-rate-reduction-(brr)-933
             // https://sneslab.net/wiki/Bit_Rate_Reduction
-            var shift = source[sourceOffset] >> 4;
-            var filter = (source[sourceOffset] >> 2) & 0x3;
+            var blockStartIndex = Voices[voiceIndex].CurrentBrrBlockAddress;
+            var shift = _psram.Span[blockStartIndex] >> 4;
+            var filter = (_psram.Span[blockStartIndex] >> 2) & 0x3;
 
             for (int i = 0; i < 16; i++)
             {
-                byte compressedSampleRaw = (byte)((source[sourceOffset + 1 + i / 2] >> (i % 2 == 1 ? 0 : 4)) & 0xf);
+                byte compressedSampleRaw = (byte)((_psram.Span[blockStartIndex + 1 + i / 2] >> (i % 2 == 1 ? 0 : 4)) & 0xf);
                 sbyte compressedSampleSigned = (sbyte)(compressedSampleRaw > 7 ? 0xf0 | compressedSampleRaw : compressedSampleRaw);
                 short sample = shift < 13
                     ? (short)((compressedSampleSigned << shift) >> 1)
@@ -357,46 +446,11 @@ namespace RemeSnes.Hardware.Audio
                 Voices[voiceIndex].lastSample2 = Voices[voiceIndex].lastSample;
                 Voices[voiceIndex].lastSample = sample;
 
-                destination[destinationOffset + i * 2] = (byte)sample;
-                destination[destinationOffset + i * 2 + 1] = (byte)(sample >> 8);
+                Voices[voiceIndex].CurrentBrrBlock[i] = sample;
             }
 
-            // TODO integrate Gauss filter
-            // TODO pitch modulation
-            EndX |= (byte)((source[sourceOffset] & 1) << voiceIndex);
-        }
-
-        /// <summary>
-        /// Executes at an emulated 32000 Hz, calculating one output sample per L/R channel.
-        /// </summary>
-        private void EachSampleCycle()
-        {
-            // CalculateVoiceSamples() // Updates ENVx and OUTx on each voice, which are used by the next step
-            GetOutputSamples();
-            // Are voice counters incremented first or last?
-            IncrementVoiceCounters();
-        }
-
-        private void IncrementVoiceCounters()
-        {
-            for (int i = 0; i < Voices.Length; i++)
-            {
-                var step = Voices[i].Pitch;
-                if (i > 0 && (PitchModulation & (1 << i)) != 0)
-                {
-                    int factor = Voices[i - 1].OutX;
-                    factor = (factor >> 4) + 0x400;
-                    step = (ushort)((step * factor) >> 10);
-                }
-                var nextCounter = Voices[i].PitchCounter + step;
-                if ((nextCounter & 0x10000) != 0)
-                {
-                    // advance to next BRR block
-                    // TODO work decompression in here, and looping
-                    Voices[i].CurrentBrrBlockIndex++;
-                }
-                Voices[i].PitchCounter = (ushort)nextCounter;
-            }
+            Voices[voiceIndex].Loop = (_psram.Span[blockStartIndex] & 0x2) != 0;
+            EndX |= (byte)((_psram.Span[blockStartIndex] & 1) << voiceIndex);
         }
 
         private struct Voice
@@ -413,28 +467,26 @@ namespace RemeSnes.Hardware.Audio
             public byte Unused1;
             public byte Unused2;
 
-            byte TimeSinceKeyOn;
-
             // Incremented at each sample (32 kHz) based on pitch
             // High 4 bits: sample index, middle 8 bits: gaussian interpolation index
             public ushort PitchCounter;
-            public ushort CurrentBrrBlockIndex;
+            public ushort CurrentBrrBlockAddress;
+            public short[] CurrentBrrBlock;
+            public bool Loop;
+            public AdsrState AdsrState;
 
             public short lastSample;
             public short lastSample2;
 
-            public void KeyOn()
-            {
-                // TODO
-                TimeSinceKeyOn = 0;
-            }
-
-            public void KeyOff()
-            {
-                // TODO
-            }
-
             public bool AdsrEnabled { get { return (Adsr1 & 0x80) != 0; } }
+        }
+
+        private enum AdsrState
+        {
+            Attack,
+            Decay,
+            Sustain,
+            Release
         }
     }
 }
