@@ -1381,7 +1381,7 @@ namespace RemeSnes.Hardware.Audio
                 case 0xa0: // EI
                     InterruptEnabled = true;
                     break;
-                case 0x9f: // XCA
+                case 0x9f: // XCA/XCN
                     Accumulator = (byte)(Accumulator >> 4 | Accumulator << 4);
                     SetNegativeAndZero(Accumulator);
                     break;
@@ -1595,6 +1595,7 @@ namespace RemeSnes.Hardware.Audio
         {
             Carry = (b & 0x80) != 0;
             b <<= 1;
+            SetNegativeAndZero(b);
         }
 
         private void DoLeftShift(AddressingType addressingType)
@@ -1609,6 +1610,7 @@ namespace RemeSnes.Hardware.Audio
         {
             Carry = (b & 0x1) != 0;
             b >>= 1;
+            SetNegativeAndZero(b);
         }
 
         private void DoRightShift(AddressingType addressingType)
@@ -1626,6 +1628,7 @@ namespace RemeSnes.Hardware.Audio
             b <<= 1;
             if (carryBefore)
                 b |= 1;
+            SetNegativeAndZero(b);
         }
 
         private void DoRotateLeft(AddressingType addressingType)
@@ -1643,6 +1646,7 @@ namespace RemeSnes.Hardware.Audio
             b >>= 1;
             if (carryBefore)
                 b |= 0x80;
+            SetNegativeAndZero(b);
         }
 
         private void DoRotateRight(AddressingType addressingType)

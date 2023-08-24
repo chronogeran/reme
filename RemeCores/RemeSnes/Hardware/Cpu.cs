@@ -57,7 +57,7 @@ namespace RemeSnes.Hardware
         internal void Run(uint cycles)
         {
             // For now a rough approximation
-            var instructions = cycles / 4;
+            var instructions = cycles / 32;
 
             if (_vblankOccurred)
             {

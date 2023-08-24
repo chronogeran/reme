@@ -4,9 +4,9 @@ using Utils;
 
 namespace RemeSnes.Hardware.Audio
 {
+    // TODO gain
     // TODO noise
     // TODO echo
-    // TODO gain
     // TODO keyon delay
     internal class Dsp
     {
@@ -189,9 +189,12 @@ namespace RemeSnes.Hardware.Audio
                         break;
                     case 2:
                         Voices[voiceIndex].Pitch = (ushort)((Voices[voiceIndex].Pitch & 0xff00) | b);
+                        //Console.WriteLine($"Set voice {voiceIndex} to pitch {Voices[voiceIndex].Pitch:x4}");
                         break;
                     case 3:
                         Voices[voiceIndex].Pitch = (ushort)((Voices[voiceIndex].Pitch & 0xff) | (b << 8));
+                        if (voiceIndex == 0 || voiceIndex == 6 || voiceIndex == 7)
+                            Console.WriteLine($"Set voice {voiceIndex} to pitch {Voices[voiceIndex].Pitch:x4}");
                         break;
                     case 4:
                         Voices[voiceIndex].SourceNumber = b;
@@ -325,19 +328,19 @@ namespace RemeSnes.Hardware.Audio
             }
 
             var sample = 0;
-            // TODO 16 bit overflow handling after each addition
             for (int i = 0; i < Voices.Length; i++)
             {
                 // shift right because we're multiplying by volume, which is an integer
-                sample += (Voices[i].OutX * (isLeft ? Voices[i].VolumeLeft : Voices[i].VolumeRight)) >> 7;
+                sample += (Voices[i].CurrentSample * (isLeft ? Voices[i].VolumeLeft : Voices[i].VolumeRight)) >> 7;
+                sample = Clamp16(sample);
             }
             sample = (sample * (isLeft ? MainVolumeLeft : MainVolumeRight)) >> 7;
-            sample = sample + (GetEchoSample(isLeft) * (isLeft ? EchoVolumeLeft : EchoVolumeRight)) >> 7;
+            sample += (GetEchoSample(isLeft) * (isLeft ? EchoVolumeLeft : EchoVolumeRight)) >> 7;
             // Final phase inversion (as done by built-in post-amp)
             sample ^= 0xffff;
 
             if ((short)sample != -1 && (short)sample != 0)
-                Console.WriteLine("got " + sample);
+                Console.WriteLine("got " + (short)sample);
 
             output[outputIndex] = (short)sample;
         }
@@ -387,6 +390,7 @@ namespace RemeSnes.Hardware.Audio
                 // Apply envelope
                 sample = (short)((sample * Voices[i].Level) >> 11);
                 Voices[i].OutX = (sbyte)(sample >> 8);
+                Voices[i].CurrentSample = sample;
             }
         }
 
@@ -556,7 +560,8 @@ namespace RemeSnes.Hardware.Audio
             // On Key On, I need to decompress 3 groups and have CurrentBrrSampleOffset point to 0.
             // When I advance from one group to the next, I should overwrite at CurrentBrrSampleOffset and increment CurrentBrrSampleOffset by 4.
             var shift = _psram.Span[sourceBlockAddress] >> 4;
-            var filter = (_psram.Span[sourceBlockAddress] >> 2) & 0x3;
+            //var filter = (_psram.Span[sourceBlockAddress] >> 2) & 0x3;
+            var filter = _psram.Span[sourceBlockAddress] & 0xc;
 
             // Previous samples come from ring buffer (already decoded, meaning filter is already applied).
             // There is no conflict when overwriting the previous first active group, because we look back as we decode;
@@ -566,36 +571,68 @@ namespace RemeSnes.Hardware.Audio
             {
                 byte compressedSampleRaw = (byte)((_psram.Span[sourceBlockAddress + 1 + groupNumber * 2 + s / 2] >> (s % 2 == 1 ? 0 : 4)) & 0xf);
                 sbyte compressedSampleSigned = (sbyte)(compressedSampleRaw > 7 ? 0xf0 | compressedSampleRaw : compressedSampleRaw);
-                short sample = shift < 13
-                    ? (short)((compressedSampleSigned << shift) >> 1)
-                    : (short)((compressedSampleSigned >> 3) << 11);
+                int sample = shift < 13
+                    ? (compressedSampleSigned << shift) >> 1
+                    : (compressedSampleSigned < 0 ? -0x800 : 0);
                 var dest = destination + s;
                 var prev1 = Voices[voiceIndex].GetSampleFromIndexWithWrapping(dest - 1);
                 var prev2 = Voices[voiceIndex].GetSampleFromIndexWithWrapping(dest - 2);
 
-                switch (filter)
+                //switch (filter)
+                //{
+                //    case 0:
+                //        break;
+                //    case 1:
+                //        sample += prev1 - (prev1 >> 4);
+                //        break;
+                //    case 2:
+                //        sample += prev1 * 2 - ((prev1 * 3) >> 5)
+                //            - prev2 + (prev2 >> 4);
+                //        break;
+                //    case 3:
+                //        sample += prev1 * 2 - ((prev1 * 13) >> 6)
+                //            - prev2 + ((prev2 * 3) >> 4);
+                //        break;
+                //}
+
+                // From bsnes. Coefficients are halved. What's up with that?
+                if (filter >= 8)
                 {
-                    case 0:
-                        break;
-                    case 1:
-                        sample = (short)(sample + prev1 - prev1 >> 4);
-                        break;
-                    case 2:
-                        sample = (short)(sample + prev1 * 2 - (prev1 * 3) >> 5
-                            - prev2 + prev2 >> 4);
-                        break;
-                    case 3:
-                        sample = (short)(sample + prev1 * 2 - (prev1 * 13) >> 6
-                            - prev2 + (prev2 * 3) >> 4);
-                        break;
+                    sample += prev1;
+                    sample -= prev2;
+                    if (filter == 8) // s += p1 * 0.953125 - p2 * 0.46875
+                    {
+                        sample += prev2 >> 4;
+                        sample += (prev1 * -3) >> 6;
+                    }
+                    else // s += p1 * 0.8984375 - p2 * 0.40625
+                    {
+                        sample += (prev1 * -13) >> 7;
+                        sample += (prev2 * 3) >> 4;
+                    }
                 }
-                // TODO handle clipping etc.
+                else if (filter > 0) // s += p1 * 0.46875
+                {
+                    sample += prev1 >> 1;
+                    sample += (-prev1) >> 5;
+                }
 
+                sample = Clamp16(sample);
                 // Clip to 15 bits
-                sample &= 0x7fff;
+                //sample &= 0x7fff;
+                sample = (short)(sample * 2);
 
-                Voices[voiceIndex].CurrentBrrSamples[dest] = sample;
+                Voices[voiceIndex].CurrentBrrSamples[dest] = (short)sample;
             }
+        }
+
+        private static int Clamp16(int value)
+        {
+            if (value < short.MinValue)
+                return short.MinValue;
+            if (value > short.MaxValue)
+                return short.MaxValue;
+            return value;
         }
 
         private struct Voice
@@ -624,6 +661,7 @@ namespace RemeSnes.Hardware.Audio
             public bool Loop;
             public AdsrState AdsrState;
             public ushort Level; // 11-bits unsigned current envelope value
+            public short CurrentSample; // 15 bit sample (full version of OutX)
             public ushort SamplesSinceEnvStep; // TODO switch to calculation using global counter rather than saving this for each voice
 
             public bool AdsrEnabled { get { return (Adsr1 & 0x80) != 0; } }
