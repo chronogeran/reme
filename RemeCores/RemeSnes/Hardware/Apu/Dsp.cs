@@ -1,13 +1,21 @@
 ﻿using System;
-using System.Diagnostics;
-using Utils;
 
 namespace RemeSnes.Hardware.Audio
 {
-    // TODO gain
     // TODO noise
     // TODO echo
-    // TODO keyon delay
+    // TODO Sort out BRR decode. I should only have one block at a time rather than reading ahead...?
+        // It looks like bsnes looks ahead for interpolation, but... doesn't look like those are decoded yet. I'm missing something.
+        // Adds the next decode destination index to the interp_index, then adds 0-3 to it...
+        // Okay, so yes, it does look ahead. Because of circular buffer and the way he flattens it out to twice the length,
+        // the next destination is the same as the current base/first active sample.
+        // Interpolation index can be as high as 7, and with interpolation, that means we can look up to 10 samples past the first.
+        // Once our base gets to the second group, we decode a new block and advance.
+        // The reason I don't see him decoding 3 blocks at first is because that happens on 3 separate cycles (--kon_delay & 3).
+        // 3 groups are populated, the buffer cycles around to the starting position, and then we're off.
+        // So it's not so different from what I'm doing.
+        // If I add the keyon delay, then I can do a similar implementation to his.
+        // Highest priority is probably just making sure pitch increments are handled at the appropriate times, with the appropriate clipping.e
     internal class Dsp
     {
         // How does the DSP know what time it is? Does it have an internal clock?
@@ -91,12 +99,20 @@ namespace RemeSnes.Hardware.Audio
         private byte SourceDirectoryOffset;
         private byte EchoBufferStartOffset;
         private byte EchoDelay;
+        private byte KeyOn;
+        private byte KeyOff;
+
+        private bool _everyOtherSample;
 
         public Dsp()
         {
-            for (int i = 0; i < Voices.Length; i++)
+            byte b = 1;
+            for (byte i = 0; i < Voices.Length; i++)
             {
-                Voices[i].CurrentBrrSamples = new short[12];
+                Voices[i].SampleBuffer = new short[12];
+                Voices[i].VoiceBit = b;
+                b <<= 1;
+                Voices[i].VoiceIndex = i;
             }
         }
 
@@ -123,6 +139,44 @@ namespace RemeSnes.Hardware.Audio
             return length;
         }
 
+        private enum VoiceRegister
+        {
+            VolL,
+            VolR,
+            PitchL,
+            PitchH,
+            SrcN,
+            Adsr1,
+            Adsr2,
+            Gain,
+            EnvX,
+            OutX,
+            Unused1,
+            Unused2
+        }
+
+        private enum Register
+        {
+            MVolL = 0x0c,
+            MVolR = 0x1c,
+            EVolL = 0x2c,
+            EVolR = 0x3c,
+            KeyOn = 0x4c,
+            KeyOff = 0x5c,
+            Flags = 0x6c,
+            EndX = 0x7c,
+            EchoFeedback = 0x0d,
+            PitchModulation = 0x2d,
+            NoiseEnable = 0x3d,
+            EchoEnable = 0x4d,
+            SourceDirectory = 0x5d,
+            EchoBufferStart = 0x6d,
+            EchoDelay = 0x7d,
+            FirCoefficients = 0x0f // at 0f, 1f, ... 7f
+        }
+
+        private const byte BRR_BLOCK_SIZE = 9;
+
         public byte Read(byte address)
         {
             address &= 0x7f;
@@ -130,43 +184,43 @@ namespace RemeSnes.Hardware.Audio
             if ((address & 0xf) < 0xc)
             {
                 var voiceIndex = address >> 4;
-                return (address & 0xf) switch
+                return (VoiceRegister)(address & 0xf) switch
                 {
-                    0 => (byte)Voices[voiceIndex].VolumeLeft,
-                    1 => (byte)Voices[voiceIndex].VolumeRight,
-                    2 => (byte)Voices[voiceIndex].Pitch,
-                    3 => (byte)(Voices[voiceIndex].Pitch >> 8),
-                    4 => Voices[voiceIndex].SourceNumber,
-                    5 => Voices[voiceIndex].Adsr1,
-                    6 => Voices[voiceIndex].Adsr2,
-                    7 => Voices[voiceIndex].Gain,
-                    8 => Voices[voiceIndex].EnvX,
-                    9 => (byte)Voices[voiceIndex].OutX,
-                    0xa => Voices[voiceIndex].Unused1,
-                    0xb => Voices[voiceIndex].Unused2,
+                    VoiceRegister.VolL    => (byte)Voices[voiceIndex].VolumeLeft,
+                    VoiceRegister.VolR    => (byte)Voices[voiceIndex].VolumeRight,
+                    VoiceRegister.PitchL  => (byte)Voices[voiceIndex].Pitch,
+                    VoiceRegister.PitchH  => (byte)(Voices[voiceIndex].Pitch >> 8),
+                    VoiceRegister.SrcN    => Voices[voiceIndex].SourceNumber,
+                    VoiceRegister.Adsr1   => Voices[voiceIndex].Adsr1,
+                    VoiceRegister.Adsr2   => Voices[voiceIndex].Adsr2,
+                    VoiceRegister.Gain    => Voices[voiceIndex].Gain,
+                    VoiceRegister.EnvX    => Voices[voiceIndex].EnvX,
+                    VoiceRegister.OutX    => (byte)Voices[voiceIndex].OutX,
+                    VoiceRegister.Unused1 => Voices[voiceIndex].Unused1,
+                    VoiceRegister.Unused2 => Voices[voiceIndex].Unused2,
                     _ => throw new Exception("Unsupported voice register " + address),
                 };
             }
             if ((address & 0xf) == 0xf)
                 return FilterCoefficients[address >> 4];
 
-            return address switch
+            return (Register)address switch
             {
-                0x0c => (byte)MainVolumeLeft,
-                0x1c => (byte)MainVolumeRight,
-                0x2c => (byte)EchoVolumeLeft,
-                0x3c => (byte)EchoVolumeRight,
-                0x4c => 0,// KeyOn. No read?
-                0x5c => 0,// KeyOff. No read?
-                0x6c => DspFlags,
-                0x7c => EndX,
-                0x0d => EchoFeedback,
-                0x2d => PitchModulation,
-                0x3d => NoiseEnable,
-                0x4d => EchoEnable,
-                0x5d => SourceDirectoryOffset,
-                0x6d => EchoBufferStartOffset,
-                0x7d => EchoDelay,
+                Register.MVolL => (byte)MainVolumeLeft,
+                Register.MVolR => (byte)MainVolumeRight,
+                Register.EVolL => (byte)EchoVolumeLeft,
+                Register.EVolR => (byte)EchoVolumeRight,
+                Register.KeyOn => 0,
+                Register.KeyOff => 0,
+                Register.Flags => DspFlags,
+                Register.EndX => EndX,
+                Register.EchoFeedback => EchoFeedback,
+                Register.PitchModulation => PitchModulation,
+                Register.NoiseEnable => NoiseEnable,
+                Register.EchoEnable => EchoEnable,
+                Register.SourceDirectory => SourceDirectoryOffset,
+                Register.EchoBufferStart => EchoBufferStartOffset,
+                Register.EchoDelay => EchoDelay,
                 _ => 0,
             };
         }
@@ -227,64 +281,52 @@ namespace RemeSnes.Hardware.Audio
             if ((address & 0xf) == 0xf)
                 FilterCoefficients[address >> 4] = b;
 
-            switch (address)
+            switch ((Register)address)
             {
-                case 0x0c:
+                case Register.MVolL:
                     MainVolumeLeft = (sbyte)b;
                     break;
-                case 0x1c:
+                case Register.MVolR:
                     MainVolumeRight = (sbyte)b;
                     break;
-                case 0x2c:
+                case Register.EVolL:
                     EchoVolumeLeft = (sbyte)b;
                     break;
-                case 0x3c:
+                case Register.EVolR:
                     EchoVolumeRight = (sbyte)b;
                     break;
-                case 0x4c:
-                    // KeyOn
-                    for (int i = 0; i < Voices.Length; i++)
-                    {
-                        if ((b & 1) != 0)
-                            KeyOn(i);
-                        b >>= 1;
-                    }
+                case Register.KeyOn:
+                    KeyOn = b;
                     break;
-                case 0x5c:
-                    // KeyOff
-                    for (int i = 0; i < Voices.Length; i++)
-                    {
-                        if ((b & 1) != 0)
-                            KeyOff(i);
-                        b >>= 1;
-                    }
+                case Register.KeyOff:
+                    KeyOff = b;
                     break;
-                case 0x6c:
+                case Register.Flags:
                     DspFlags = b;
                     break;
-                case 0x7c:
-                    // EndX, read only
+                case Register.EndX:
+                    // read only
                     //EndX = b;
                     break;
-                case 0x0d:
+                case Register.EchoFeedback:
                     EchoFeedback = b;
                     break;
-                case 0x2d:
+                case Register.PitchModulation:
                     PitchModulation = b;
                     break;
-                case 0x3d:
+                case Register.NoiseEnable:
                     NoiseEnable = b;
                     break;
-                case 0x4d:
+                case Register.EchoEnable:
                     EchoEnable = b;
                     break;
-                case 0x5d:
+                case Register.SourceDirectory:
                     SourceDirectoryOffset = b;
                     break;
-                case 0x6d:
+                case Register.EchoBufferStart:
                     EchoBufferStartOffset = b;
                     break;
-                case 0x7d:
+                case Register.EchoDelay:
                     EchoDelay = b;
                     break;
             }
@@ -312,7 +354,7 @@ namespace RemeSnes.Hardware.Audio
         {
             CalculateOutputSamples(OutputSamplesLeft, _outputSampleIndex, isLeft: true);
             CalculateOutputSamples(OutputSamplesRight, _outputSampleIndex, isLeft: false);
-            _outputSampleIndex += 2;
+            _outputSampleIndex++;
             if (_outputSampleIndex == OutputSamplesLeft.Length)
             {
                 _outputSampleIndex = 0;
@@ -336,12 +378,11 @@ namespace RemeSnes.Hardware.Audio
             }
             sample = (sample * (isLeft ? MainVolumeLeft : MainVolumeRight)) >> 7;
             sample += (GetEchoSample(isLeft) * (isLeft ? EchoVolumeLeft : EchoVolumeRight)) >> 7;
+            sample = Clamp16(sample);
             // Final phase inversion (as done by built-in post-amp)
-            sample ^= 0xffff;
+            //sample ^= 0xffff;
 
-            if ((short)sample != -1 && (short)sample != 0)
-                Console.WriteLine("got " + (short)sample);
-
+            // Write sample
             output[outputIndex] = (short)sample;
         }
 
@@ -358,16 +399,18 @@ namespace RemeSnes.Hardware.Audio
             return 0;
         }
 
-        private short InterpolateSample(int voiceIndex)
+        private int InterpolateSample(ref Voice v)
         {
-            var interpolationIndex = (Voices[voiceIndex].PitchCounter >> 4) & 0xff;
+            var interpolationIndex = (v.PitchCounter >> 4) & 0xff;
             int output;
-            output  = (Gauss[0x0ff - interpolationIndex] * Voices[voiceIndex].GetSampleWithWrapping(0)) >> 11;
-            output += (Gauss[0x1ff - interpolationIndex] * Voices[voiceIndex].GetSampleWithWrapping(1)) >> 11;
-            output += (Gauss[0x100 + interpolationIndex] * Voices[voiceIndex].GetSampleWithWrapping(2)) >> 11;
+            output  = (Gauss[0x0ff - interpolationIndex] * v.GetSampleWithWrapping(0)) >> 11;
+            output += (Gauss[0x1ff - interpolationIndex] * v.GetSampleWithWrapping(1)) >> 11;
+            output += (Gauss[0x100 + interpolationIndex] * v.GetSampleWithWrapping(2)) >> 11;
             output  = (short)output;
-            output += (Gauss[0x000 + interpolationIndex] * Voices[voiceIndex].GetSampleWithWrapping(3)) >> 11;
-            return (short)(output >> 1);
+            output += (Gauss[0x000 + interpolationIndex] * v.GetSampleWithWrapping(3)) >> 11;
+            output = Clamp16(output);
+            output &= ~1;
+            return output;
         }
 
         /// <summary>
@@ -377,191 +420,227 @@ namespace RemeSnes.Hardware.Audio
         {
             CalculateVoiceSamples();
             GetOutputSamples();
-            IncrementVoiceCounters();
+            _everyOtherSample = !_everyOtherSample;
         }
 
         private void CalculateVoiceSamples()
         {
             for (int i = 0; i < Voices.Length; i++)
             {
-                UpdateEnvValue(i);
-                // Interpolation here
-                var sample = InterpolateSample(i);
-                // Apply envelope
-                sample = (short)((sample * Voices[i].Level) >> 11);
-                Voices[i].OutX = (sbyte)(sample >> 8);
-                Voices[i].CurrentSample = sample;
+                CalculateVoiceSample(ref Voices[i]);
             }
         }
 
-        private void UpdateEnvValue(int voiceIndex)
+        /// <summary>
+        /// After running this, v.CurrentSample will be ready for adding to the total output sample.
+        /// </summary>
+        private void CalculateVoiceSample(ref Voice v)
         {
-            // TODO handle GAIN modes
-            Voices[voiceIndex].SamplesSinceEnvStep++;
-            if (Voices[voiceIndex].SamplesSinceEnvStep == Voices[voiceIndex].GetSamplesForEnvStep())
+            // Represents all the voice-specific steps, simplified somewhat
+            // (not currently worried about super accurate timing
+
+            // 3b
+            v.BrrBlockHeader = _psram.Span[v.CurrentBrrBlockAddress];
+
+            // 3c
+            bool ignorePitch = false;
+            if (v.KeyOnDelay > 0)
             {
-                Voices[voiceIndex].SamplesSinceEnvStep = 0;
-                switch (Voices[voiceIndex].AdsrState)
+                if (v.KeyOnDelay == 5)
                 {
-                    case AdsrState.Attack:
-                        Voices[voiceIndex].ModifyLevel(0x20);
-                        if (Voices[voiceIndex].Level >= 0x7e0)
-                            Voices[voiceIndex].AdsrState = AdsrState.Decay;
-                        break;
-                    case AdsrState.Decay:
-                        Voices[voiceIndex].ModifyLevel((short)-(((Voices[voiceIndex].Level - 1) >> 8) + 1));
-                        if (Voices[voiceIndex].Level <= Voices[voiceIndex].GetSustainLevel())
-                            Voices[voiceIndex].AdsrState = AdsrState.Sustain;
-                        break;
-                    case AdsrState.Sustain:
-                        Voices[voiceIndex].ModifyLevel((short)-(((Voices[voiceIndex].Level - 1) >> 8) + 1));
-                        break;
-                    case AdsrState.Release:
-                        Voices[voiceIndex].ModifyLevel(-8);
-                        break;
+                    v.CurrentBrrBlockAddress = GetStartAddress(ref v);
+                    v.CurrentBrrBlockOffset = 1;
+                    v.CurrentBufferIndex = 0;
+                    // Ignore header this sample
+                    v.BrrBlockHeader = 0;
                 }
-            }
-        }
 
-        private void IncrementVoiceCounters()
-        {
-            for (int i = 0; i < Voices.Length; i++)
+                v.Level = 0;
+
+                v.PitchCounter = 0;
+                // Last 3 samples, decode a sample each time
+                if ((--v.KeyOnDelay & 3) != 0)
+                {
+                    v.PitchCounter = 0x4000;
+                }
+
+                ignorePitch = true;
+            }
+
+            int sample = InterpolateSample(ref v);
+
+            // TODO noise override
+
+            // Apply envelope
+            v.CurrentSample = ((sample * v.Level) >> 11) & ~1;
+            v.EnvX = (byte)(v.Level >> 4);
+
+            // Immediate silence due to end of sample or soft reset
+            if ((DspFlags & 0x80) != 0 || (v.BrrBlockHeader & 3) == 1)
             {
-                var step = Voices[i].Pitch;
-                if (i > 0 && (PitchModulation & (1 << i)) != 0)
-                {
-                    int factor = Voices[i - 1].OutX;
-                    factor = (factor >> 4) + 0x400;
-                    step = (ushort)((step * factor) >> 10);
-                }
+                v.AdsrState = AdsrState.Release;
+                v.Level = 0;
+            }
 
-                var nextCounter = Voices[i].PitchCounter + step;
-                if ((nextCounter & 0x4000) != 0)
+            if (_everyOtherSample)
+            {
+                if ((KeyOff & v.VoiceBit) != 0)
                 {
-                    AdvanceBrrGroup(i);
+                    v.AdsrState = AdsrState.Release;
+                    // Technically these values are cleared at a different time, but
+                    // for simplicity, I'll clear them as they're handled.
+                    KeyOff &= (byte)~v.VoiceBit;
                 }
-                Voices[i].PitchCounter = (ushort)(nextCounter & 0x3fff);
+                if ((KeyOn & v.VoiceBit) != 0)
+                {
+                    v.KeyOnDelay = 5;
+                    v.AdsrState = AdsrState.Attack;
+                    KeyOn &= (byte)~v.VoiceBit;
+                    // The rest of the key on will be processed in the next sample step
+                }
+            }
+
+            // Update envelope
+            if (v.KeyOnDelay == 0)
+            {
+                UpdateEnvValue(ref v);
+            }
+
+            // 4
+            // Decode the next group if necessary
+            if (v.PitchCounter >= 0x4000)
+            {
+                DecompressBrrSampleGroup(ref v);
+
+                // Advance to the next block if necessary
+                if ((v.CurrentBrrBlockOffset += 2) >= BRR_BLOCK_SIZE)
+                {
+                    if ((v.BrrBlockHeader & 1) != 0)
+                    {
+                        v.CurrentBrrBlockAddress = GetLoopAddress(ref v);
+                        EndX |= v.VoiceBit;
+                    }
+                    else
+                        v.CurrentBrrBlockAddress += BRR_BLOCK_SIZE;
+                    v.CurrentBrrBlockOffset = 1;
+                }
+            }
+
+            // Apply pitch
+            if (!ignorePitch)
+            {
+                int increment = v.Pitch;
+                if ((PitchModulation & v.VoiceBit) != 0 && v.VoiceIndex > 0)
+                {
+                    // I'm using t_output from the previous voice... after which step?
+                    // This usage happens in voice i step 3c
+                    // t_output is set later in step 3c, and that's the only time
+                    // 
+                    // At that point, the previous voice would be on step
+                    increment += ((Voices[v.VoiceIndex - 1].CurrentSample >> 5) * increment) >> 10;
+                }
+                var newCounter = (v.PitchCounter & 0x3fff) + increment;
+                if (newCounter > 0x7fff)
+                    newCounter = 0x7fff;
+                v.PitchCounter = (ushort)newCounter;
+            }
+
+            // 5
+            if (v.KeyOnDelay == 5)
+                EndX &= (byte)~v.VoiceBit;
+
+            // 6
+            v.OutX = (byte)(v.CurrentSample >> 8);
+        }
+
+        private void UpdateEnvValue(ref Voice v)
+        {
+            if (v.AdsrState == AdsrState.Release)
+            {
+                v.SamplesSinceEnvStep = 0;
+                if (v.Level < 8)
+                    v.Level = 0;
+                else
+                    v.Level -= 8;
+                return;
+            }
+
+            var envMode = v.EnvelopeMode;
+            if (envMode == EnvelopeMode.DirectGain)
+            {
+                v.SamplesSinceEnvStep = 0;
+                v.Level = (ushort)((v.Gain & 0x7f) * 16);
+                return;
+            }
+
+            v.SamplesSinceEnvStep++;
+            if (v.SamplesSinceEnvStep == v.GetSamplesForEnvStep())
+            {
+                v.SamplesSinceEnvStep = 0;
+                switch (envMode)
+                {
+                    case EnvelopeMode.LinearDecrease:
+                        v.ModifyLevel(-0x20);
+                        break;
+                    case EnvelopeMode.ExponentialDecrease:
+                        v.ModifyLevel((short)-(((v.Level - 1) >> 8) + 1));
+                        break;
+                    case EnvelopeMode.LinearIncrease:
+                        v.ModifyLevel(0x20);
+                        break;
+                    case EnvelopeMode.BentIncrease:
+                        v.ModifyLevel((short)(v.Level < 0x600 ? 0x20 : 0x8));
+                        break;
+                    case EnvelopeMode.Adsr:
+                        switch (v.AdsrState)
+                        {
+                            case AdsrState.Attack:
+                                v.ModifyLevel(0x20);
+                                if (v.Level >= 0x7e0)
+                                    v.AdsrState = AdsrState.Decay;
+                                break;
+                            case AdsrState.Decay:
+                                v.ModifyLevel((short)-(((v.Level - 1) >> 8) + 1));
+                                if (v.Level <= v.GetSustainLevel())
+                                    v.AdsrState = AdsrState.Sustain;
+                                break;
+                            case AdsrState.Sustain:
+                                v.ModifyLevel((short)-(((v.Level - 1) >> 8) + 1));
+                                break;
+                            case AdsrState.Release:
+                                v.ModifyLevel(-8);
+                                break;
+                        }
+                        break;
+                }
             }
         }
 
-        private void KeyOn(int voiceIndex)
+        private ushort GetSampleTableEntryAddress(byte sourceNumber)
         {
-            Console.WriteLine($"KeyOn {voiceIndex}");
-            Voices[voiceIndex].CurrentBrrBlockAddress = GetStartAddress(voiceIndex);
-            Voices[voiceIndex].CurrentBrrGroupIndex = 0;
-            Voices[voiceIndex].CurrentBrrSampleOffset = 0;
-            Voices[voiceIndex].SetLevel(0);
-            Voices[voiceIndex].PitchCounter = 0;
-            Voices[voiceIndex].AdsrState = AdsrState.Attack;
-            Voices[voiceIndex].SamplesSinceEnvStep = 0;
-
-            // Load 3 groups right away
-            DecompressBrrSampleGroup(voiceIndex, Voices[voiceIndex].CurrentBrrBlockAddress, 0, 0);
-            DecompressBrrSampleGroup(voiceIndex, Voices[voiceIndex].CurrentBrrBlockAddress, 4, 1);
-            DecompressBrrSampleGroup(voiceIndex, Voices[voiceIndex].CurrentBrrBlockAddress, 8, 2);
+            return (ushort)(SourceDirectoryOffset * 0x100 + sourceNumber * 4);
         }
 
-        private void KeyOff(int voiceIndex)
+        private ushort GetStartAddress(ref Voice v)
         {
-            Voices[voiceIndex].AdsrState = AdsrState.Release;
-            Voices[voiceIndex].SamplesSinceEnvStep = 0;
-        }
-
-        private ushort GetSampleTableEntryAddress(int voiceIndex)
-        {
-            return (ushort)(SourceDirectoryOffset * 0x100 + Voices[voiceIndex].SourceNumber * 4);
-        }
-
-        private ushort GetStartAddress(int voiceIndex)
-        {
-            var tableEntryOffset = GetSampleTableEntryAddress(voiceIndex);
+            var tableEntryOffset = GetSampleTableEntryAddress(v.SourceNumber);
             return (ushort)(_psram.Span[tableEntryOffset] | (_psram.Span[tableEntryOffset + 1] << 8));
         }
 
-        private ushort GetLoopAddress(int voiceIndex)
+        private ushort GetLoopAddress(ref Voice v)
         {
-            var tableEntryOffset = GetSampleTableEntryAddress(voiceIndex);
+            var tableEntryOffset = GetSampleTableEntryAddress(v.SourceNumber);
             return (ushort)(_psram.Span[tableEntryOffset + 2] | (_psram.Span[tableEntryOffset + 3] << 8));
-        }
-
-        /// <summary>
-        /// Increments pointers to the next BRR group in the stream, advancing to the next block if necessary.
-        /// </summary>
-        private void AdvanceBrrGroup(int voiceIndex)
-        {
-            // Advance "current" pointers
-            if (Voices[voiceIndex].CurrentBrrGroupIndex == 3)
-                AdvanceBrrBlock(voiceIndex);
-            else
-                Voices[voiceIndex].CurrentBrrGroupIndex++;
-
-            // Decompress from two groups past new current
-            var groupToDecode = Voices[voiceIndex].CurrentBrrGroupIndex + 2;
-            var sourceAddress = Voices[voiceIndex].CurrentBrrBlockAddress;
-            if (groupToDecode >= 4)
-            {
-                // Decoding from a future block
-                sourceAddress = GetNextBrrBlockAddress(voiceIndex, Voices[voiceIndex].CurrentBrrBlockAddress);
-                groupToDecode -= 4;
-            }
-            DecompressBrrSampleGroup(voiceIndex, sourceAddress, Voices[voiceIndex].CurrentBrrSampleOffset, groupToDecode);
-
-            // Increment CurrentBrrSampleOffset afterward
-            Voices[voiceIndex].CurrentBrrSampleOffset += 4;
-            if (Voices[voiceIndex].CurrentBrrSampleOffset == 12)
-                Voices[voiceIndex].CurrentBrrSampleOffset = 0;
-        }
-
-        private ushort GetNextBrrBlockAddress(int voiceIndex, ushort blockAddress)
-        {
-            // This duplicates some logic, but the other is looking based on already decoded End/Loop information,
-            // and this has to check the 
-            if ((_psram.Span[blockAddress] & 1) != 0)
-            {
-                if ((_psram.Span[blockAddress] & 2) != 0)
-                    return GetLoopAddress(voiceIndex);
-                else
-                    return GetStartAddress(voiceIndex);
-            }
-            else return (ushort)(blockAddress + 9);
-        }
-
-        /// <summary>
-        /// Advances the voice's "current" block.
-        /// </summary>
-        private void AdvanceBrrBlock(int voiceIndex)
-        {
-            Voices[voiceIndex].CurrentBrrGroupIndex = 0;
-
-            if ((EndX & (1 << voiceIndex)) != 0)
-            {
-                // Current block was End
-                Voices[voiceIndex].CurrentBrrBlockAddress = GetLoopAddress(voiceIndex);
-                if (!Voices[voiceIndex].Loop)
-                {
-                    KeyOff(voiceIndex);
-                    Voices[voiceIndex].SetLevel(0);
-                }
-            }
-            else
-                Voices[voiceIndex].CurrentBrrBlockAddress += 9;
-
-            Voices[voiceIndex].Loop = (_psram.Span[Voices[voiceIndex].CurrentBrrBlockAddress] & 0x2) != 0;
-            EndX |= (byte)((_psram.Span[Voices[voiceIndex].CurrentBrrBlockAddress] & 1) << voiceIndex);
         }
 
         /// <summary>
         /// Decodes 1 group (4 samples) from the BRR stream.
         /// </summary>
-        private void DecompressBrrSampleGroup(int voiceIndex, int sourceBlockAddress, int destination, int groupNumber)
+        private void DecompressBrrSampleGroup(ref Voice v)
         {
-            // I need to have two active groups and a reserve group.
-            // CurrentBrrSampleOffset should always point to 1st active group.
-            // On Key On, I need to decompress 3 groups and have CurrentBrrSampleOffset point to 0.
-            // When I advance from one group to the next, I should overwrite at CurrentBrrSampleOffset and increment CurrentBrrSampleOffset by 4.
-            var shift = _psram.Span[sourceBlockAddress] >> 4;
-            //var filter = (_psram.Span[sourceBlockAddress] >> 2) & 0x3;
-            var filter = _psram.Span[sourceBlockAddress] & 0xc;
+            var shift = v.BrrBlockHeader >> 4;
+            //var filter = (v.BrrBlockHeader >> 2) & 0x3;
+            var filter = v.BrrBlockHeader & 0xc;
 
             // Previous samples come from ring buffer (already decoded, meaning filter is already applied).
             // There is no conflict when overwriting the previous first active group, because we look back as we decode;
@@ -569,14 +648,14 @@ namespace RemeSnes.Hardware.Audio
 
             for (int s = 0; s < 4; s++)
             {
-                byte compressedSampleRaw = (byte)((_psram.Span[sourceBlockAddress + 1 + groupNumber * 2 + s / 2] >> (s % 2 == 1 ? 0 : 4)) & 0xf);
+                byte compressedSampleRaw = (byte)((_psram.Span[v.CurrentBrrBlockAddress + v.CurrentBrrBlockOffset + s / 2] >> (s % 2 == 1 ? 0 : 4)) & 0xf);
                 sbyte compressedSampleSigned = (sbyte)(compressedSampleRaw > 7 ? 0xf0 | compressedSampleRaw : compressedSampleRaw);
                 int sample = shift < 13
                     ? (compressedSampleSigned << shift) >> 1
                     : (compressedSampleSigned < 0 ? -0x800 : 0);
-                var dest = destination + s;
-                var prev1 = Voices[voiceIndex].GetSampleFromIndexWithWrapping(dest - 1);
-                var prev2 = Voices[voiceIndex].GetSampleFromIndexWithWrapping(dest - 2);
+                var dest = v.CurrentBufferIndex + s;
+                var prev1 = v.GetSampleFromIndexWithWrapping(dest - 1);
+                var prev2 = v.GetSampleFromIndexWithWrapping(dest - 2);
 
                 //switch (filter)
                 //{
@@ -622,8 +701,11 @@ namespace RemeSnes.Hardware.Audio
                 //sample &= 0x7fff;
                 sample = (short)(sample * 2);
 
-                Voices[voiceIndex].CurrentBrrSamples[dest] = (short)sample;
+                v.SampleBuffer[dest] = (short)sample;
             }
+
+            if ((v.CurrentBufferIndex += 4) >= v.SampleBuffer.Length)
+                v.CurrentBufferIndex = 0;
         }
 
         private static int Clamp16(int value)
@@ -637,6 +719,7 @@ namespace RemeSnes.Hardware.Audio
 
         private struct Voice
         {
+            // Register values
             // These volumes are 8-bit two's complement
             public sbyte VolumeLeft;
             public sbyte VolumeRight;
@@ -645,35 +728,89 @@ namespace RemeSnes.Hardware.Audio
             public byte Adsr1;
             public byte Adsr2;
             public byte Gain;
-            public byte EnvX { get { return (byte)((Level >> 4) & 0x7f); } } // 7-bit unsigned current envelope value (top 7 of Level)
-            public sbyte OutX; // 8-bit signed wave height * envelope value (not multiplied by volume) (upper 8 bits of 15 bit sample)
+            public byte EnvX; // 7-bit unsigned current envelope value (top 7 of Level)
+            public byte OutX; // 8-bit signed wave height * envelope value (not multiplied by volume) (upper 8 bits of 15 bit sample)
             public byte Unused1;
             public byte Unused2;
 
-            // Incremented at each sample (32 kHz) based on pitch
-            // High 4 bits: sample index, middle 8 bits: gaussian interpolation index
+            // Non-register state
+            /// <summary>
+            /// High 4 bits: sample index, middle 8 bits: gaussian interpolation index.
+            /// Incremented at each sample (32 kHz) based on pitch.
+            /// </summary>
             public ushort PitchCounter;
-            public ushort CurrentBrrBlockAddress; // Pointer to compressed BRR block in memory
-            public ushort NextBrrBlockAddress; // Pointer to compressed BRR block in memory
-            public byte CurrentBrrGroupIndex; // Current group within the current block: 0-3
-            public byte CurrentBrrSampleOffset; // Base index for accessing decompressed samples in CurrentBrrSamples, rotates in increments of 4
-            public short[] CurrentBrrSamples; // 12 sample ring buffer (3 "groups" of 4 samples each)
-            public bool Loop;
+            /// <summary>
+            /// Pointer to latest compressed BRR block in memory.
+            /// This advances with what we decode, not what the beginning of our buffer came from.
+            /// </summary>
+            public ushort CurrentBrrBlockAddress;
+            /// <summary>
+            /// Offset within the current BRR block we are decoding. Advances from group to group,
+            /// so should always be 1,3,5, or 7.
+            /// </summary>
+            public byte CurrentBrrBlockOffset;
+            /// <summary>
+            /// Base index for accessing decompressed samples in SampleBuffer, rotates in increments of 4 (should always be 0, 4, or 8).
+            /// This points both to where the next samples will be decoded to, as well as to the "0" for reading them.
+            /// </summary>
+            public byte CurrentBufferIndex;
+            /// <summary>
+            /// 12 sample ring buffer (3 "groups" of 4 samples each). These are decoded 15-bit samples.
+            /// </summary>
+            public short[] SampleBuffer;
+            /// <summary>
+            /// Current envelope state. "Release" state is valid even for Gain modes.
+            /// </summary>
             public AdsrState AdsrState;
-            public ushort Level; // 11-bits unsigned current envelope value
-            public short CurrentSample; // 15 bit sample (full version of OutX)
-            public ushort SamplesSinceEnvStep; // TODO switch to calculation using global counter rather than saving this for each voice
+            /// <summary>
+            /// Full 11-bit unsigned current envelope value.
+            /// </summary>
+            public ushort Level;
+            /// <summary>
+            /// 15 bit sample (full version of OutX).
+            /// </summary>
+            public int CurrentSample;
+            /// <summary>
+            /// Counter for when we should update the envelope/Level value.
+            /// TODO switch to calculation using global counter rather than saving this for each voice
+            /// </summary>
+            public ushort SamplesSinceEnvStep;
+            /// <summary>
+            /// Voices have a warmup period of 5 samples when they are keyed on.
+            /// Counts down from 5 to 0.
+            /// </summary>
+            public byte KeyOnDelay;
+            /// <summary>
+            /// Copy of the current BRR block's header. We keep a copy so we can ignore it on key on.
+            /// </summary>
+            public byte BrrBlockHeader;
+            /// <summary>
+            /// 1, 2, 4, 8... for voices 0, 1, 2, 3...
+            /// </summary>
+            public byte VoiceBit;
+            /// <summary>
+            /// 0-7
+            /// </summary>
+            public byte VoiceIndex;
 
-            public bool AdsrEnabled { get { return (Adsr1 & 0x80) != 0; } }
+            /// <summary>
+            /// ADSR/Gain mode, as read from current register values.
+            /// </summary>
+            public EnvelopeMode EnvelopeMode
+            {
+                get
+                {
+                    if ((Adsr1 & 0x80) != 0)
+                        return EnvelopeMode.Adsr;
+                    if ((Gain & 0x80) == 0)
+                        return EnvelopeMode.DirectGain;
+                    return (EnvelopeMode)(((Gain >> 5) & 0x3) + 2);
+                }
+            }
 
             public void ModifyLevel(short change)
             {
                 Level = (ushort)(Level + change);
-            }
-
-            public void SetLevel(ushort level)
-            {
-                Level = level;
             }
 
             /// <summary>
@@ -681,24 +818,31 @@ namespace RemeSnes.Hardware.Audio
             /// </summary>
             public short GetSampleFromIndexWithWrapping(int index)
             {
-                if (index >= CurrentBrrSamples.Length)
-                    index -= CurrentBrrSamples.Length;
+                if (index >= SampleBuffer.Length)
+                    index -= SampleBuffer.Length;
                 else if (index < 0)
-                    index += CurrentBrrSamples.Length;
-                return CurrentBrrSamples[index];
+                    index += SampleBuffer.Length;
+                return SampleBuffer[index];
             }
 
             /// <summary>
-            /// Gets a sample relative to current pointer (using PitchCounter and CurrentBrrSampleOffset).
+            /// Gets a sample relative to current pointer (using PitchCounter and CurrentBufferIndex).
             /// </summary>
             public short GetSampleWithWrapping(int offset = 0)
             {
-                var index = CurrentBrrSampleOffset + (PitchCounter >> 12) + offset;
-                return GetSampleFromIndexWithWrapping(index);
+                return GetSampleFromIndexWithWrapping(CurrentBufferIndex + (PitchCounter >> 12) + offset);
             }
 
             public ushort GetSamplesForEnvStep()
             {
+                var envMode = EnvelopeMode;
+                if (AdsrState == AdsrState.Release)
+                    return 1;
+                if (envMode == EnvelopeMode.DirectGain)
+                    return 0;
+                if (envMode != EnvelopeMode.Adsr)
+                    return RateTable[Gain & 0x1f];
+
                 switch (AdsrState)
                 {
                     case AdsrState.Attack:
@@ -710,8 +854,6 @@ namespace RemeSnes.Hardware.Audio
                     case AdsrState.Sustain:
                         var sustainRate = (Adsr2 & 0x1f);
                         return RateTable[sustainRate];
-                    case AdsrState.Release:
-                        return 1;
                     default:
                         throw new Exception("Unexpected ADSR state: " + AdsrState);
                 }
@@ -737,6 +879,16 @@ namespace RemeSnes.Hardware.Audio
             Decay,
             Sustain,
             Release
+        }
+
+        private enum EnvelopeMode
+        {
+            Adsr,
+            DirectGain,
+            LinearDecrease,
+            ExponentialDecrease,
+            LinearIncrease,
+            BentIncrease
         }
     }
 }
